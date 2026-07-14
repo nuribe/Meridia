@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: pgdiag-dev
+    environment:
+      POSTGRES_USER: pgdiag
+      POSTGRES_PASSWORD: pgdiag_dev
+      POSTGRES_DB: tienda_demo
+    ports:
+      - "5477:5432"
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdiag_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgdiag -d tienda_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdiag_data:
