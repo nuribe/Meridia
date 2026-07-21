@@ -301,7 +301,53 @@ export const api = {
       `/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/relationships`,
       { method: "POST", body: JSON.stringify({ tables }) }
     ),
+
+  // --- Constructor gráfico de consultas (diagrama <-> SQL) ---
+
+  /** Traduce un diagrama de consulta (tablas + joins) a SQL PostgreSQL. */
+  buildQuery: (id: string, dbname: string, spec: QuerySpec) =>
+    apiFetch<{ sql: string }>(
+      `/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/query/build`,
+      { method: "POST", body: JSON.stringify(spec) }
+    ),
+
+  /** Analiza una sentencia SQL y devuelve el diagrama equivalente. */
+  parseQuery: (id: string, dbname: string, sql: string) =>
+    apiFetch<ParsedQuery>(
+      `/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/query/parse`,
+      { method: "POST", body: JSON.stringify({ sql }) }
+    ),
 };
+
+// --- Tipos del constructor de consultas ---
+
+export type JoinType = "INNER JOIN" | "LEFT JOIN" | "RIGHT JOIN" | "CROSS JOIN";
+
+export interface QueryJoinSpec {
+  source: string; // "schema.tabla"
+  target: string; // "schema.tabla"
+  join_type: JoinType;
+  source_columns: string[];
+  target_columns: string[];
+}
+
+export interface QuerySpec {
+  tables: string[];
+  aliases?: Record<string, string>;
+  joins: QueryJoinSpec[];
+  select_sql?: string | null;
+  tail_sql?: string | null;
+}
+
+export interface ParsedQuery {
+  tables: string[];
+  aliases: Record<string, string>;
+  joins: QueryJoinSpec[];
+  select_sql: string | null;
+  tail_sql: string | null;
+  unresolved: string[];
+  warnings: string[];
+}
 
 // --- Diagramas (.pgdiag) ---
 

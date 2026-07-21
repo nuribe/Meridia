@@ -209,3 +209,23 @@ class DiagramCreate(BaseModel):
     dbname: str
     nodes: list[DiagramNodePos] = []
     notes: list[DiagramNote] = []
+
+
+class QueryJoinSpec(BaseModel):
+    """Una relación JOIN del constructor gráfico de consultas."""
+
+    source: str  # "schema.tabla" (lado ya presente en el encadenado)
+    target: str  # "schema.tabla" (tabla que se une)
+    join_type: str = "INNER JOIN"  # INNER/LEFT/RIGHT/CROSS JOIN
+    source_columns: list[str] = []
+    target_columns: list[str] = []
+
+
+class QuerySpec(BaseModel):
+    """Diagrama de una consulta: tablas + joins traducibles a SQL."""
+
+    tables: list[str] = []  # ["schema.tabla", ...]; la 1ª es la base sugerida
+    aliases: dict[str, str] = {}  # "schema.tabla" -> alias (opcional)
+    joins: list[QueryJoinSpec] = []
+    select_sql: str | None = None  # lista de columnas del SELECT (default "*")
+    tail_sql: str | None = None  # cláusulas tras el encadenado (WHERE/GROUP…)

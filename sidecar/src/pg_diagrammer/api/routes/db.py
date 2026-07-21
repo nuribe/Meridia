@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from pg_diagrammer.api.routes.profiles import _error, password_missing_error
 from pg_diagrammer.connections.profiles import PasswordUnavailable as _PU  # noqa: F401
 from pg_diagrammer.connections.profiles import PasswordUnavailable
-from pg_diagrammer.domain.models import ObjectSummary, Snapshot, TableKind
+from pg_diagrammer.domain.models import ObjectSummary, QuerySpec, Snapshot, TableKind
+from pg_diagrammer.domain import query_builder
 from pg_diagrammer.errors import ApiError, classify_pg_error
 from pg_diagrammer.export.generators import to_dbml, to_mermaid
 from pg_diagrammer.introspection import introspector
@@ -453,6 +454,130 @@ def relationships(profile_id: str, dbname: str, body: RelationshipsRequest, requ
         if r.source in wanted and r.target in wanted
     ]
     return {"ok": True, "relationships": edges}
+
+
+def _known_names(snapshot: Snapshot) -> dict[str, str]:
+    """Mapa de resolución de nombres: claves completas + nombres sueltos no
+    ambiguos -> "schema.tabla". Mismo criterio que la dependencia de vistas."""
+    known: dict[str, str] = {}
+    name_counts: dict[str, int] = {}
+    for t in snapshot.tables:
+        known[t] = t
+        bare = t.split(".", 1)[1]
+        name_counts[bare] = name_counts.get(bare, 0) + 1
+    for t in snapshot.tables:
+        bare = t.split(".", 1)[1]
+        if name_counts[bare] == 1:
+            known.setdefault(bare, t)
+    return known
+
+
+@router.post("/profiles/{profile_id}/db/{dbname}/query/build")
+def build_query(profile_id: str, dbname: str, body: QuerySpec, request: Request):
+    """Traduce el diagrama del constructor (tablas + joins) a SQL PostgreSQL.
+
+    Valida que cada tabla y columna exista en el snapshot: así el SQL generado
+    solo referencia objetos reales (coherente con la ejecución de solo lectura).
+    """
+    snapshot, err = _snapshot(request, profile_id, dbname)
+    if err:
+        return err
+    if not body.tables:
+        return _error(422, ApiError(
+            code="VALIDATION",
+            message="Se requiere al menos una tabla para construir la consulta.",
+            hint="Arrastra tablas al lienzo antes de pulsar «Listo».",
+        ))
+    for key in body.tables:
+        found = snapshot.tables.get(key)
+        if found is None:
+            return _error(422, ApiError(
+                code="VALIDATION",
+                message=f"La tabla {key} no existe en el snapshot.",
+                hint="Refresca la introspección si la tabla es nueva.",
+            ))
+    # Validación de columnas referenciadas en los joins.
+    cols_by_table = {
+        key: {c.name for c in t.columns} for key, t in snapshot.tables.items()
+    }
+    for j in body.joins:
+        jt = (j.join_type or "").strip().upper()
+        if jt == "CROSS JOIN":
+            continue
+        for key, cols in ((j.source, j.source_columns), (j.target, j.target_columns)):
+            for col in cols:
+                if col not in cols_by_table.get(key, set()):
+                    return _error(422, ApiError(
+                        code="VALIDATION",
+                        message=f"La columna {key}.{col} no existe.",
+                        hint="Revisa las columnas unidas en la relación del lienzo.",
+                    ))
+    model = query_builder.QueryModel(
+        tables=list(body.tables),
+        aliases=dict(body.aliases),
+        joins=[
+            query_builder.Join(
+                source=j.source,
+                target=j.target,
+                join_type=j.join_type,
+                source_columns=list(j.source_columns),
+                target_columns=list(j.target_columns),
+            )
+            for j in body.joins
+        ],
+        select_sql=body.select_sql,
+        tail_sql=body.tail_sql,
+    )
+    try:
+        sql_text = query_builder.build_query_sql(model)
+    except ValueError as exc:
+        return _error(422, ApiError(code="VALIDATION", message=str(exc)))
+    return {"ok": True, "sql": sql_text}
+
+
+class ParseQueryRequest(BaseModel):
+    sql: str
+
+
+@router.post("/profiles/{profile_id}/db/{dbname}/query/parse")
+def parse_query(profile_id: str, dbname: str, body: ParseQueryRequest, request: Request):
+    """Analiza una sentencia SQL y devuelve el diagrama equivalente."""
+    snapshot, err = _snapshot(request, profile_id, dbname)
+    if err:
+        return err
+    if not body.sql.strip():
+        return _error(422, ApiError(
+            code="VALIDATION",
+            message="No hay SQL que analizar.",
+            hint="Escribe una consulta en el editor antes de pulsar «Diagrama».",
+        ))
+    known = _known_names(snapshot)
+    model = query_builder.parse_query_sql(body.sql, known)
+    if not model.tables:
+        return _error(422, ApiError(
+            code="SQL_ERROR",
+            message="No se reconocieron tablas del snapshot en el FROM/JOIN.",
+            hint="Comprueba que la consulta referencie tablas existentes.",
+        ))
+    return {
+        "ok": True,
+        "tables": model.tables,
+        "aliases": model.aliases,
+        "joins": [
+            {
+                "source": j.source,
+                "target": j.target,
+                "join_type": j.join_type,
+                "source_columns": j.source_columns,
+                "target_columns": j.target_columns,
+            }
+            for j in model.joins
+        ],
+        "select_sql": model.select_sql,
+        "tail_sql": model.tail_sql,
+        "unresolved": model.unresolved,
+        "warnings": model.warnings,
+    }
 
 
 class ExportRequest(BaseModel):

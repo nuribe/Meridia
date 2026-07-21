@@ -12,8 +12,9 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
 import { Prec } from "@codemirror/state";
 import { autocompletion, completionKeymap, acceptCompletion } from "@codemirror/autocomplete";
-import { api, type ApiError, type IntrospectSummary } from "./api/client";
+import { api, type ApiError, type IntrospectSummary, type ParsedQuery } from "./api/client";
 import { currentTheme, THEMES } from "./theme";
+import QueryBuilder from "./QueryBuilder";
 
 interface Props {
   profileId: string;
@@ -39,6 +40,10 @@ export default function QueryTab({ profileId, dbname, summary, loadColumns }: Pr
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<{ message: string; hint?: string | null } | null>(null);
   const [colCache, setColCache] = useState<Record<string, string[]>>({});
+  // Constructor gráfico: null = cerrado; overlay abierto (opcionalmente con un
+  // análisis inicial de la sentencia actual — Flujo B: SQL -> Diagrama).
+  const [builder, setBuilder] = useState<{ initial: ParsedQuery | null } | null>(null);
+  const [opening, setOpening] = useState(false);
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Altura del editor (px). El divisor la ajusta; el resto lo ocupan los resultados.
@@ -180,6 +185,49 @@ export default function QueryTab({ profileId, dbname, summary, loadColumns }: Pr
 
   const cell: CSSProperties = { padding: "4px 10px", whiteSpace: "nowrap" };
 
+  // --- Constructor gráfico de consultas ---
+  function openBuilderEmpty() {
+    setError(null);
+    setBuilder({ initial: null }); // Flujo A: Diagrama -> SQL (lienzo vacío)
+  }
+
+  async function openBuilderFromSql() {
+    const text = sqlText.trim();
+    if (!text) {
+      openBuilderEmpty();
+      return;
+    }
+    setOpening(true);
+    setError(null);
+    try {
+      const parsed = await api.parseQuery(profileId, dbname, text); // Flujo B
+      setBuilder({ initial: parsed });
+    } catch (e) {
+      const err = e as ApiError;
+      setError({ message: err.message ?? String(e), hint: err.hint });
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  if (builder) {
+    return (
+      <div className="d-flex flex-column w-100 h-100" style={{ minHeight: 0 }}>
+        <QueryBuilder
+          profileId={profileId}
+          dbname={dbname}
+          schemas={summary?.schemas ?? []}
+          initial={builder.initial}
+          onDone={(generated) => {
+            setSqlText(generated);
+            setBuilder(null);
+          }}
+          onCancel={() => setBuilder(null)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div ref={containerRef} className="d-flex flex-column w-100 h-100" style={{ minHeight: 0 }}>
       {/* Barra de acciones */}
@@ -194,6 +242,28 @@ export default function QueryTab({ profileId, dbname, summary, loadColumns }: Pr
           )}
         </button>
         <small className="text-body-secondary">Ctrl/⌘ + Enter · solo lectura</small>
+        <div className="vr mx-1" />
+        <button
+          className="btn btn-sm btn-outline-primary"
+          onClick={openBuilderEmpty}
+          title="Construir una consulta a partir de un diagrama (arrastrando tablas y uniendo columnas)"
+        >
+          ◇ Desde diagrama
+        </button>
+        <button
+          className="btn btn-sm btn-outline-primary"
+          onClick={() => void openBuilderFromSql()}
+          disabled={opening}
+          title="Convertir la consulta actual en un diagrama editable"
+        >
+          {opening ? (
+            <>
+              <span className="spinner-border spinner-border-sm me-1" /> …
+            </>
+          ) : (
+            "◇ Diagrama"
+          )}
+        </button>
         <span className="flex-grow-1" />
         {result && (
           <small className="text-body-secondary">
