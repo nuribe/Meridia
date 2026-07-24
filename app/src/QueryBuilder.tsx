@@ -35,11 +35,11 @@ import {
   type ParsedQuery,
   type QueryJoinSpec,
   type RelationshipInfo,
-  type SchemaInfo,
   type TableDetail,
 } from "./api/client";
 import QueryTableNode from "./QueryTableNode";
-import ObjectTree, { DND_MIME } from "./ObjectTree";
+import { DND_MIME } from "./ObjectTree";
+import { useSetBuilderSession } from "./builderBridge";
 
 const nodeTypes = { querytable: QueryTableNode };
 
@@ -66,13 +66,14 @@ function joinId(source: string, target: string): string {
 interface Props {
   profileId: string;
   dbname: string;
-  schemas: SchemaInfo[];
+  /** ¿Es la pestaña visible? Solo la activa toma control del árbol compartido. */
+  active: boolean;
   initial?: ParsedQuery | null;
   onDone: (sql: string) => void;
   onCancel: () => void;
 }
 
-function Canvas({ profileId, dbname, schemas, initial, onDone, onCancel }: Props) {
+function Canvas({ profileId, dbname, active, initial, onDone, onCancel }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [joins, setJoins] = useState<QJoin[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -142,6 +143,25 @@ function Canvas({ profileId, dbname, schemas, initial, onDone, onCancel }: Props
     },
     [profileId, dbname, setNodes, buildNode]
   );
+
+  // Añadir por doble clic desde el árbol compartido (sin coordenadas del ratón):
+  // posición ligeramente aleatoria para no apilar tablas.
+  const addTableFromTree = useCallback(
+    (key: string) => {
+      void addTable(key, { x: 80 + Math.random() * 240, y: 60 + Math.random() * 240 });
+    },
+    [addTable]
+  );
+
+  // Registra esta sesión con el Explorador para que su único árbol pase a modo
+  // arrastrar-al-lienzo. Al desmontar (Cancelar/Listo) o dejar de ser visible,
+  // se limpia y el árbol vuelve a su modo de navegación normal.
+  const setBuilderSession = useSetBuilderSession();
+  useEffect(() => {
+    if (!active) return;
+    setBuilderSession({ addTable: addTableFromTree, presentKeys: present });
+    return () => setBuilderSession(null);
+  }, [active, addTableFromTree, present, setBuilderSession]);
 
   // Traer tablas relacionadas (mismo comportamiento que DiagramView).
   const addRelated = useCallback(
@@ -471,20 +491,8 @@ function Canvas({ profileId, dbname, schemas, initial, onDone, onCancel }: Props
 
   return (
     <div className="d-flex flex-grow-1" style={{ minHeight: 0 }}>
-      <ObjectTree
-        profileId={profileId}
-        dbname={dbname}
-        schemas={schemas}
-        width={280}
-        draggable
-        presentKeys={present}
-        hint="Arrastra tablas al lienzo (o doble clic). Une una columna con otra para crear un JOIN. ⇲ trae relacionadas."
-        onItemDoubleClick={(o) =>
-          void addTable(`${o.schema_name}.${o.name}`, { x: 80 + Math.random() * 240, y: 60 + Math.random() * 240 })
-        }
-        onError={setError}
-      />
-
+      {/* Sin árbol propio: el builder usa el mismo explorador del Explorer
+          (ver builderBridge). Aquí solo va el lienzo. */}
       <div className="d-flex flex-column flex-grow-1" style={{ minWidth: 0 }}>
         <div className="d-flex align-items-center gap-2 px-3 py-2 bg-body border-bottom flex-wrap">
           <span className="fw-semibold">◇ Constructor de consulta</span>

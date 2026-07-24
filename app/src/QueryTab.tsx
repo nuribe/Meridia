@@ -22,6 +22,8 @@ interface Props {
   summary: IntrospectSummary | null;
   /** Detalle de columnas por tabla, para autocompletar (se carga bajo demanda). */
   loadColumns: (schema: string, table: string) => Promise<string[]>;
+  /** ¿Es la pestaña visible? Solo la activa registra su builder en el árbol. */
+  active: boolean;
 }
 
 interface Result {
@@ -32,7 +34,7 @@ interface Result {
   elapsedMs: number;
 }
 
-export default function QueryTab({ profileId, dbname, summary, loadColumns }: Props) {
+export default function QueryTab({ profileId, dbname, summary, loadColumns, active }: Props) {
   const [sqlText, setSqlText] = useState(
     "-- Escribe tu consulta (solo lectura). Ctrl+Enter para ejecutar.\nSELECT * FROM "
   );
@@ -216,7 +218,7 @@ export default function QueryTab({ profileId, dbname, summary, loadColumns }: Pr
         <QueryBuilder
           profileId={profileId}
           dbname={dbname}
-          schemas={summary?.schemas ?? []}
+          active={active}
           initial={builder.initial}
           onDone={(generated) => {
             setSqlText(generated);

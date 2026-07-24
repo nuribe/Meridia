@@ -17,6 +17,7 @@ import ObjectTree, { KIND_ICON, KIND_LABEL } from "./ObjectTree";
 import ModeSwitch from "./ModeSwitch";
 import ThemeMenu from "./ThemeMenu";
 import QueryTab from "./QueryTab";
+import { SetBuilderSessionContext, type BuilderSession } from "./builderBridge";
 import { currentTheme, THEMES } from "./theme";
 
 function errText(e: unknown): string {
@@ -69,6 +70,10 @@ export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: P
   const [status, setStatus] = useState("Cargando schemas…");
   const [error, setError] = useState<string | null>(null);
   const [diff, setDiff] = useState<SnapshotDiff | null>(null);
+  // Sesión activa del constructor gráfico de consultas. Cuando no es null, el
+  // árbol compartido de la izquierda pasa a modo arrastrar-al-lienzo en vez de
+  // montar un segundo explorador dentro del builder.
+  const [builderSession, setBuilderSession] = useState<BuilderSession | null>(null);
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? null;
   const activeDetail = activeTab?.kind === "detail" ? activeTab : null;
@@ -198,6 +203,7 @@ export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: P
   }
 
   return (
+    <SetBuilderSessionContext.Provider value={setBuilderSession}>
     <div className="d-flex flex-column vh-100 bg-body-tertiary">
       <header
         className="d-flex align-items-center gap-2 px-3 py-2 bg-body flex-wrap"
@@ -262,8 +268,24 @@ export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: P
           profileId={profileId}
           dbname={dbname}
           schemas={summary?.schemas ?? []}
-          selectedKey={activeDetail?.key ?? null}
-          onItemClick={(o) => void openFromTree(o.schema_name, o.name)}
+          selectedKey={builderSession ? null : activeDetail?.key ?? null}
+          // Con un builder activo, el mismo árbol pasa a modo arrastrar-al-lienzo;
+          // si no, sigue abriendo pestañas de detalle al hacer clic.
+          draggable={!!builderSession}
+          presentKeys={builderSession?.presentKeys}
+          hint={
+            builderSession
+              ? "Arrastra tablas al lienzo (o doble clic). Une una columna con otra para crear un JOIN. ⇲ trae relacionadas."
+              : undefined
+          }
+          onItemClick={
+            builderSession ? undefined : (o) => void openFromTree(o.schema_name, o.name)
+          }
+          onItemDoubleClick={
+            builderSession
+              ? (o) => builderSession.addTable(`${o.schema_name}.${o.name}`)
+              : undefined
+          }
           badges={
             diff
               ? Object.fromEntries([
@@ -349,6 +371,7 @@ export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: P
                     dbname={dbname}
                     summary={summary}
                     loadColumns={loadColumns}
+                    active={t.id === activeId}
                   />
                 </div>
               );
@@ -424,6 +447,7 @@ export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: P
         </section>
       </div>
     </div>
+    </SetBuilderSessionContext.Provider>
   );
 }
 

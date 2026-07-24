@@ -8,7 +8,15 @@
  * Dentro de cada schema los objetos se agrupan por tipo (Tablas, Vistas, …)
  * en secciones colapsables.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import { api, type ApiError, type ObjectSummary, type SchemaInfo } from "./api/client";
 
 export const DND_MIME = "application/pgdiag-table";
@@ -52,7 +60,14 @@ export interface TreeMenuItem {
   onClick: () => void;
 }
 
-// --- Almacén de estado del árbol por conexión+BD (persiste entre montajes) ---
+// --- Almacén de estado del árbol por conexión+BD ---
+//
+// Es un store *reactivo* (patrón useSyncExternalStore): varios ObjectTree pueden
+// estar montados a la vez (el Explorador y la vista de Diagramas viven ambos en
+// el DOM, ocultándose con display:none). Un store de solo-lectura-al-montar no
+// bastaba: al cambiar el filtro en uno, el otro árbol ya montado no se enteraba
+// y mostraba el filtro «perdido». Con suscripción, cualquier cambio se propaga
+// en vivo a todas las instancias y sobrevive a los cambios de vista.
 
 interface TreeUiState {
   query: string;
@@ -62,15 +77,43 @@ interface TreeUiState {
   collapsedGroups: Record<string, boolean>; // clave: "schema|kind"
 }
 
-const treeStateStore = new Map<string, TreeUiState>();
+interface TreeStoreEntry {
+  state: TreeUiState;
+  listeners: Set<() => void>;
+}
 
-function getTreeState(key: string): TreeUiState {
-  let st = treeStateStore.get(key);
-  if (!st) {
-    st = { query: "", schemaFilters: [], kindFilter: "", expanded: {}, collapsedGroups: {} };
-    treeStateStore.set(key, st);
+const treeStateStore = new Map<string, TreeStoreEntry>();
+
+function getEntry(key: string): TreeStoreEntry {
+  let e = treeStateStore.get(key);
+  if (!e) {
+    e = {
+      state: { query: "", schemaFilters: [], kindFilter: "", expanded: {}, collapsedGroups: {} },
+      listeners: new Set(),
+    };
+    treeStateStore.set(key, e);
   }
-  return st;
+  return e;
+}
+
+function subscribeTreeState(key: string, cb: () => void): () => void {
+  const e = getEntry(key);
+  e.listeners.add(cb);
+  return () => {
+    e.listeners.delete(cb);
+  };
+}
+
+/** Snapshot estable: la misma referencia mientras el estado no cambie. */
+function getTreeSnapshot(key: string): TreeUiState {
+  return getEntry(key).state;
+}
+
+/** Aplica un parche y notifica a todas las instancias suscritas. */
+function updateTreeState(key: string, patch: Partial<TreeUiState>): void {
+  const e = getEntry(key);
+  e.state = { ...e.state, ...patch };
+  e.listeners.forEach((l) => l());
 }
 
 const TREE_CSS = `
@@ -135,32 +178,25 @@ export default function ObjectTree({
   const GROUP_CHUNK = 200;
   const [groupLimits, setGroupLimits] = useState<Record<string, number>>({});
   const storeKey = `${profileId}|${dbname}`;
-  const persisted = getTreeState(storeKey);
+  // Estado de filtros/expansión compartido y reactivo entre todas las instancias
+  // del árbol (Explorador y Diagramas). Cualquier cambio aquí re-renderiza a los
+  // demás árboles montados, así el filtro nunca se «pierde» al cambiar de vista.
+  const subscribe = useCallback((cb: () => void) => subscribeTreeState(storeKey, cb), [storeKey]);
+  const getSnapshot = useCallback(() => getTreeSnapshot(storeKey), [storeKey]);
+  const treeState = useSyncExternalStore(subscribe, getSnapshot);
+  const { query, schemaFilters, kindFilter, expanded, collapsedGroups } = treeState;
 
-  const [query, setQueryRaw] = useState(persisted.query);
-  const [schemaFilters, setSchemaFiltersRaw] = useState<string[]>(persisted.schemaFilters);
   const [schemaMenuOpen, setSchemaMenuOpen] = useState(false);
   const [schemaSearch, setSchemaSearch] = useState("");
-  const [kindFilter, setKindFilterRaw] = useState(persisted.kindFilter);
-  const [expanded, setExpandedRaw] = useState<Record<string, boolean>>(persisted.expanded);
-  const [collapsedGroups, setCollapsedGroupsRaw] = useState<Record<string, boolean>>(
-    persisted.collapsedGroups
-  );
   const [loaded, setLoaded] = useState<Record<string, ObjectSummary[]>>({});
   const [loadingSchemas, setLoadingSchemas] = useState<Set<string>>(new Set());
   const [searchResults, setSearchResults] = useState<ObjectSummary[] | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: TreeMenuItem[] } | null>(null);
   const inFlight = useRef<Set<string>>(new Set());
 
-  // Setters que además persisten en el almacén
-  const setQuery = (v: string) => {
-    persisted.query = v;
-    setQueryRaw(v);
-  };
-  const setSchemaFilters = (v: string[]) => {
-    persisted.schemaFilters = v;
-    setSchemaFiltersRaw(v);
-  };
+  // Setters: escriben en el store reactivo (notifican a todas las instancias).
+  const setQuery = (v: string) => updateTreeState(storeKey, { query: v });
+  const setSchemaFilters = (v: string[]) => updateTreeState(storeKey, { schemaFilters: v });
   const toggleSchemaFilter = (name: string) => {
     setSchemaFilters(
       schemaFilters.includes(name)
@@ -168,24 +204,15 @@ export default function ObjectTree({
         : [...schemaFilters, name]
     );
   };
-  const setKindFilter = (v: string) => {
-    persisted.kindFilter = v;
-    setKindFilterRaw(v);
-  };
+  const setKindFilter = (v: string) => updateTreeState(storeKey, { kindFilter: v });
   const setExpanded = (updater: (prev: Record<string, boolean>) => Record<string, boolean>) => {
-    setExpandedRaw((prev) => {
-      const next = updater(prev);
-      persisted.expanded = next;
-      return next;
-    });
+    updateTreeState(storeKey, { expanded: updater(getTreeSnapshot(storeKey).expanded) });
   };
   const setCollapsedGroups = (
     updater: (prev: Record<string, boolean>) => Record<string, boolean>
   ) => {
-    setCollapsedGroupsRaw((prev) => {
-      const next = updater(prev);
-      persisted.collapsedGroups = next;
-      return next;
+    updateTreeState(storeKey, {
+      collapsedGroups: updater(getTreeSnapshot(storeKey).collapsedGroups),
     });
   };
 
