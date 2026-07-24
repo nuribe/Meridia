@@ -12,7 +12,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
@@ -116,6 +115,79 @@ function updateTreeState(key: string, patch: Partial<TreeUiState>): void {
   e.listeners.forEach((l) => l());
 }
 
+// --- Caché compartida de objetos por schema (por conexión+BD) ---
+//
+// Antes cada ObjectTree tenía su propia caché local de objetos. Como el
+// Explorador y la vista de Diagramas están montados a la vez y ahora comparten
+// qué schemas están expandidos, cada expansión disparaba la MISMA consulta dos
+// veces en paralelo. Esa ráfaga de conexiones simultáneas desincronizaba al
+// servidor (peor con pgbouncer). Con una caché compartida + un guard global de
+// «en vuelo», cada schema se consulta una sola vez y ambos árboles la reutilizan.
+
+interface TreeDataEntry {
+  loaded: Record<string, ObjectSummary[]>;
+  listeners: Set<() => void>;
+}
+
+const treeDataStore = new Map<string, TreeDataEntry>();
+// Peticiones en curso, clave `${storeKey}::${schema}`: evita consultas dobles.
+const dataInFlight = new Set<string>();
+
+function getDataEntry(key: string): TreeDataEntry {
+  let e = treeDataStore.get(key);
+  if (!e) {
+    e = { loaded: {}, listeners: new Set() };
+    treeDataStore.set(key, e);
+  }
+  return e;
+}
+
+function subscribeTreeData(key: string, cb: () => void): () => void {
+  const e = getDataEntry(key);
+  e.listeners.add(cb);
+  return () => {
+    e.listeners.delete(cb);
+  };
+}
+
+function getTreeDataSnapshot(key: string): Record<string, ObjectSummary[]> {
+  return getDataEntry(key).loaded;
+}
+
+function setSchemaObjects(key: string, schema: string, items: ObjectSummary[]): void {
+  const e = getDataEntry(key);
+  e.loaded = { ...e.loaded, [schema]: items };
+  e.listeners.forEach((l) => l());
+}
+
+// Búsqueda global compartida: como el término de búsqueda también es común a
+// todos los árboles, dos árboles montados dispararían la misma consulta a la
+// vez. Se comparte la promesa en vuelo para que solo salga una petición; ambos
+// árboles reciben el mismo resultado.
+const searchInFlight = new Map<string, Promise<ObjectSummary[]>>();
+
+function fetchSearchObjects(
+  key: string,
+  profileId: string,
+  dbname: string,
+  needle: string,
+  schemaFilters: string[]
+): Promise<ObjectSummary[]> {
+  const fk = `${key}::search::${needle}::${schemaFilters.join(",")}`;
+  let p = searchInFlight.get(fk);
+  if (!p) {
+    p = api
+      .listObjects(profileId, dbname, {
+        q: needle,
+        schema: schemaFilters.length > 0 ? schemaFilters.join(",") : undefined,
+      })
+      .then((r) => r.items);
+    searchInFlight.set(fk, p);
+    void p.finally(() => searchInFlight.delete(fk));
+  }
+  return p;
+}
+
 const TREE_CSS = `
 .pgtree-item { border-radius: 6px; transition: background .12s; }
 .pgtree-item:hover { background: #eef3fb; }
@@ -186,13 +258,17 @@ export default function ObjectTree({
   const treeState = useSyncExternalStore(subscribe, getSnapshot);
   const { query, schemaFilters, kindFilter, expanded, collapsedGroups } = treeState;
 
+  // Objetos por schema: caché compartida y reactiva (una sola consulta por schema
+  // para todos los árboles montados).
+  const dataSubscribe = useCallback((cb: () => void) => subscribeTreeData(storeKey, cb), [storeKey]);
+  const dataSnapshot = useCallback(() => getTreeDataSnapshot(storeKey), [storeKey]);
+  const loaded = useSyncExternalStore(dataSubscribe, dataSnapshot);
+
   const [schemaMenuOpen, setSchemaMenuOpen] = useState(false);
   const [schemaSearch, setSchemaSearch] = useState("");
-  const [loaded, setLoaded] = useState<Record<string, ObjectSummary[]>>({});
   const [loadingSchemas, setLoadingSchemas] = useState<Set<string>>(new Set());
   const [searchResults, setSearchResults] = useState<ObjectSummary[] | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: TreeMenuItem[] } | null>(null);
-  const inFlight = useRef<Set<string>>(new Set());
 
   // Setters: escriben en el store reactivo (notifican a todas las instancias).
   const setQuery = (v: string) => updateTreeState(storeKey, { query: v });
@@ -217,16 +293,20 @@ export default function ObjectTree({
   };
 
   async function loadSchema(name: string) {
-    if (inFlight.current.has(name)) return;
-    inFlight.current.add(name);
+    // Ya cacheado por cualquier árbol: nada que hacer.
+    if (getTreeDataSnapshot(storeKey)[name]) return;
+    // Guard global: si otro árbol ya lo está pidiendo, no dupliques la consulta.
+    const flightKey = `${storeKey}::${name}`;
+    if (dataInFlight.has(flightKey)) return;
+    dataInFlight.add(flightKey);
     setLoadingSchemas((s) => new Set(s).add(name));
     try {
       const r = await api.listObjects(profileId, dbname, { schema: name });
-      setLoaded((l) => ({ ...l, [name]: r.items }));
+      setSchemaObjects(storeKey, name, r.items);
     } catch (e) {
       onError?.(errText(e));
     } finally {
-      inFlight.current.delete(name);
+      dataInFlight.delete(flightKey);
       setLoadingSchemas((s) => {
         const next = new Set(s);
         next.delete(name);
@@ -252,13 +332,10 @@ export default function ObjectTree({
     }
     const t = setTimeout(async () => {
       try {
-        const r = await api.listObjects(profileId, dbname, {
-          q: needle,
-          // El filtro de schemas se aplica en el servidor: así el límite de
-          // resultados no recorta coincidencias de los schemas elegidos.
-          schema: schemaFilters.length > 0 ? schemaFilters.join(",") : undefined,
-        });
-        setSearchResults(r.items);
+        // El filtro de schemas se aplica en el servidor: así el límite de
+        // resultados no recorta coincidencias de los schemas elegidos.
+        const items = await fetchSearchObjects(storeKey, profileId, dbname, needle, schemaFilters);
+        setSearchResults(items);
       } catch (e) {
         onError?.(errText(e));
       }
