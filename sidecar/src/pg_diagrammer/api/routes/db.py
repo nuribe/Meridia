@@ -6,23 +6,41 @@ from fastapi.responses import JSONResponse
 
 import json
 import math
+import re
 
 import psycopg
 from psycopg import sql as pgsql
+import pytds
 from pydantic import BaseModel
 
 from pg_diagrammer.api.routes.profiles import _error, password_missing_error
+from pg_diagrammer.connections import manager
 from pg_diagrammer.connections.profiles import PasswordUnavailable as _PU  # noqa: F401
 from pg_diagrammer.connections.profiles import PasswordUnavailable
-from pg_diagrammer.domain.models import ObjectSummary, QuerySpec, Snapshot, TableKind
+from pg_diagrammer.domain.models import Engine, ObjectSummary, QuerySpec, Snapshot, TableKind
 from pg_diagrammer.domain import query_builder
-from pg_diagrammer.errors import ApiError, classify_pg_error
+from pg_diagrammer.errors import ApiError, DB_EXCEPTIONS, classify_db_error, classify_pg_error  # noqa: F401
 from pg_diagrammer.export.generators import to_dbml, to_mermaid
-from pg_diagrammer.introspection import introspector
+from pg_diagrammer.introspection import introspector, mssql_introspector
 from pg_diagrammer.introspection.introspector import diff_snapshots, routines_using
 from pg_diagrammer.introspection.view_joins import collect_relations, parse_view_joins
 
 router = APIRouter(tags=["db"])
+
+
+def _ms_ident(name: str) -> str:
+    """Cita un identificador de SQL Server con corchetes."""
+    return "[" + name.replace("]", "]]") + "]"
+
+
+_SQL_COMMENTS = re.compile(r"(--[^\n]*)|(/\*.*?\*/)", re.S)
+
+
+def _first_keyword(sql_text: str) -> str:
+    """Primera palabra clave de la sentencia, ignorando comentarios."""
+    stripped = _SQL_COMMENTS.sub(" ", sql_text).lstrip().lstrip("(").lstrip()
+    parts = stripped.split(None, 1)
+    return parts[0].upper() if parts else ""
 
 
 def _snapshot(request: Request, profile_id: str, dbname: str, force: bool = False):
@@ -40,12 +58,16 @@ def _snapshot(request: Request, profile_id: str, dbname: str, force: bool = Fals
         if cached is not None:
             return cached, None
     try:
-        conninfo = store.conninfo(profile, dbname)
-        snapshot = introspector.introspect(conninfo, dbname)
+        if profile.engine == Engine.sqlserver:
+            with manager.open_profile_connection(store, profile, dbname) as conn:
+                snapshot = mssql_introspector.introspect(conn, dbname)
+        else:
+            conninfo = store.conninfo(profile, dbname)
+            snapshot = introspector.introspect(conninfo, dbname)
     except PasswordUnavailable:
         return None, password_missing_error(profile_id)
-    except (psycopg.Error, OSError) as exc:
-        return None, _error(400, classify_pg_error(exc))
+    except DB_EXCEPTIONS as exc:
+        return None, _error(400, classify_db_error(profile.engine, exc))
     cache.set(profile_id, dbname, snapshot)
     return snapshot, None
 
@@ -236,6 +258,14 @@ ROUTINE_DEF_SQL = """
       AND pg_catalog.pg_get_function_identity_arguments(p.oid) = %s
 """
 
+# En SQL Server no hay sobrecarga de rutinas: schema + nombre identifican.
+MSSQL_ROUTINE_DEF_SQL = """
+    SELECT sm.definition
+    FROM sys.sql_modules sm
+    JOIN sys.objects o ON o.object_id = sm.object_id
+    WHERE SCHEMA_NAME(o.schema_id) = %s AND o.name = %s
+"""
+
 
 @router.get("/profiles/{profile_id}/db/{dbname}/routines/{schema}/{routine}/definition")
 def routine_definition(
@@ -252,10 +282,12 @@ def routine_definition(
     if profile is None:
         return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
     try:
-        conninfo = store.conninfo(profile, dbname)
-        with psycopg.connect(conninfo) as conn:
+        with manager.open_profile_connection(store, profile, dbname) as conn:
             with conn.cursor() as cur:
-                cur.execute(ROUTINE_DEF_SQL, (schema, routine, args))
+                if profile.engine == Engine.sqlserver:
+                    cur.execute(MSSQL_ROUTINE_DEF_SQL, (schema, routine))
+                else:
+                    cur.execute(ROUTINE_DEF_SQL, (schema, routine, args))
                 row = cur.fetchone()
         if row is None:
             return _error(404, ApiError(
@@ -266,8 +298,8 @@ def routine_definition(
         return {"ok": True, "definition": row[0]}
     except PasswordUnavailable:
         return password_missing_error(profile_id)
-    except (psycopg.Error, OSError) as exc:
-        return _error(400, classify_pg_error(exc))
+    except DB_EXCEPTIONS as exc:
+        return _error(400, classify_db_error(profile.engine, exc))
 
 
 def _jsonable(v):
@@ -320,60 +352,88 @@ def table_data(
     profile = store.get(profile_id)
     colnames = {c.name for c in found.columns}
 
-    # Filtros por columna (texto, ILIKE); columnas validadas, valores parametrizados
+    # Filtros por columna (texto, insensible a mayúsculas);
+    # columnas validadas contra el snapshot, valores parametrizados.
     try:
         filter_map = json.loads(filters) if filters else {}
     except json.JSONDecodeError:
         filter_map = {}
-    conditions = []
-    params: list = []
-    if isinstance(filter_map, dict):
-        for col, val in filter_map.items():
-            if col in colnames and str(val).strip():
-                conditions.append(
-                    pgsql.SQL("{}::text ILIKE %s").format(pgsql.Identifier(col))
-                )
-                params.append(f"%{val}%")
-    where = (
-        pgsql.SQL(" WHERE ") + pgsql.SQL(" AND ").join(conditions)
-        if conditions
-        else pgsql.SQL("")
-    )
+    active_filters = [
+        (col, f"%{val}%")
+        for col, val in (filter_map.items() if isinstance(filter_map, dict) else [])
+        if col in colnames and str(val).strip()
+    ]
+    order_col = order_by if (order_by and order_by in colnames and order_dir in ("asc", "desc")) else None
 
-    # Ordenación: columna pedida (validada) o PK como orden estable por defecto
-    if order_by and order_by in colnames and order_dir in ("asc", "desc"):
-        order = pgsql.SQL(" ORDER BY {} {}").format(
-            pgsql.Identifier(order_by), pgsql.SQL("DESC" if order_dir == "desc" else "ASC")
+    if profile.engine == Engine.sqlserver:
+        # SQL Server: corchetes, LIKE sobre NVARCHAR y OFFSET/FETCH
+        # (que exige ORDER BY; sin PK se usa el orden neutro (SELECT NULL)).
+        where_sql = (
+            " WHERE " + " AND ".join(
+                f"LOWER(CAST({_ms_ident(c)} AS NVARCHAR(MAX))) LIKE LOWER(%s)"
+                for c, _ in active_filters
+            )
+            if active_filters else ""
         )
-    elif found.pk:
-        order = pgsql.SQL(" ORDER BY {}").format(
-            pgsql.SQL(", ").join(pgsql.Identifier(c) for c in found.pk)
+        if order_col:
+            order_sql = f" ORDER BY {_ms_ident(order_col)} {'DESC' if order_dir == 'desc' else 'ASC'}"
+        elif found.pk:
+            order_sql = " ORDER BY " + ", ".join(_ms_ident(c) for c in found.pk)
+        else:
+            order_sql = " ORDER BY (SELECT NULL)"
+        target_sql = f"{_ms_ident(schema)}.{_ms_ident(table)}"
+        query = (
+            f"SELECT * FROM {target_sql}{where_sql}{order_sql}"
+            " OFFSET %s ROWS FETCH NEXT %s ROWS ONLY"
         )
+        count_query = f"SELECT COUNT_BIG(*) FROM {target_sql}{where_sql}"
+        params = [v for _, v in active_filters]
+        exec_params = (*params, offset, limit)
     else:
-        order = pgsql.SQL("")
+        conditions = [
+            pgsql.SQL("{}::text ILIKE %s").format(pgsql.Identifier(c))
+            for c, _ in active_filters
+        ]
+        where = (
+            pgsql.SQL(" WHERE ") + pgsql.SQL(" AND ").join(conditions)
+            if conditions
+            else pgsql.SQL("")
+        )
+        # Ordenación: columna pedida (validada) o PK como orden estable por defecto
+        if order_col:
+            order = pgsql.SQL(" ORDER BY {} {}").format(
+                pgsql.Identifier(order_col), pgsql.SQL("DESC" if order_dir == "desc" else "ASC")
+            )
+        elif found.pk:
+            order = pgsql.SQL(" ORDER BY {}").format(
+                pgsql.SQL(", ").join(pgsql.Identifier(c) for c in found.pk)
+            )
+        else:
+            order = pgsql.SQL("")
+        query = pgsql.SQL("SELECT * FROM {}.{}{}{} LIMIT %s OFFSET %s").format(
+            pgsql.Identifier(schema), pgsql.Identifier(table), where, order
+        )
+        count_query = pgsql.SQL("SELECT count(*) FROM {}.{}{}").format(
+            pgsql.Identifier(schema), pgsql.Identifier(table), where
+        )
+        params = [v for _, v in active_filters]
+        exec_params = (*params, limit, offset)
 
-    query = pgsql.SQL("SELECT * FROM {}.{}{}{} LIMIT %s OFFSET %s").format(
-        pgsql.Identifier(schema), pgsql.Identifier(table), where, order
-    )
-    count_query = pgsql.SQL("SELECT count(*) FROM {}.{}{}").format(
-        pgsql.Identifier(schema), pgsql.Identifier(table), where
-    )
     try:
-        conninfo = store.conninfo(profile, dbname)
-        with psycopg.connect(conninfo) as conn:
+        with manager.open_profile_connection(store, profile, dbname) as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (*params, limit, offset))
-                columns = [d.name for d in cur.description or []]
+                cur.execute(query, exec_params)
+                columns = [d[0] for d in cur.description or []]
                 rows = [[_jsonable(v) for v in row] for row in cur.fetchall()]
                 total = None
                 if with_total:
-                    cur.execute(count_query, params)
+                    cur.execute(count_query, tuple(params))
                     total = cur.fetchone()[0]
         return {"ok": True, "columns": columns, "rows": rows, "total": total}
     except PasswordUnavailable:
         return password_missing_error(profile_id)
-    except (psycopg.Error, OSError) as exc:
-        return _error(400, classify_pg_error(exc))
+    except DB_EXCEPTIONS as exc:
+        return _error(400, classify_db_error(profile.engine, exc))
 
 
 class QueryRequest(BaseModel):
@@ -384,11 +444,12 @@ class QueryRequest(BaseModel):
 
 @router.post("/profiles/{profile_id}/db/{dbname}/query")
 def run_query(profile_id: str, dbname: str, body: QueryRequest, request: Request):
-    """Ejecuta una consulta del usuario en una transacción de SOLO LECTURA.
+    """Ejecuta una consulta del usuario en modo de SOLO LECTURA.
 
-    Protecciones: SET TRANSACTION READ ONLY (rechaza INSERT/UPDATE/DELETE/DDL),
-    statement_timeout, y límite de filas devueltas. La ejecución usa la misma
-    conexión/credenciales del perfil.
+    PostgreSQL: transacción READ ONLY (rechaza INSERT/UPDATE/DELETE/DDL) +
+    statement_timeout. SQL Server: validación de que la sentencia empiece por
+    SELECT/WITH + timeout de consulta del driver. En ambos: límite de filas
+    devueltas y las mismas credenciales del perfil.
     """
     store = request.app.state.profiles
     profile = store.get(profile_id)
@@ -399,19 +460,31 @@ def run_query(profile_id: str, dbname: str, body: QueryRequest, request: Request
         return _error(422, ApiError(code="VALIDATION", message="Consulta vacía."))
     max_rows = max(1, min(body.max_rows, 5000))
     timeout = max(1000, min(body.timeout_ms, 60000))
+    is_mssql = profile.engine == Engine.sqlserver
+    # SQL Server no tiene transacciones READ ONLY: se valida que la sentencia
+    # sea de lectura (una sola sentencia SELECT/WITH) antes de ejecutar.
+    if is_mssql and _first_keyword(sql_text) not in ("SELECT", "WITH"):
+        return _error(400, ApiError(
+            code="SQL_ERROR",
+            message="Sentencia no permitida en el editor.",
+            hint="Solo se permiten consultas de lectura (SELECT, WITH…).",
+        ))
     try:
-        conninfo = store.conninfo(profile, dbname)
         import time
         t0 = time.perf_counter()
-        with psycopg.connect(conninfo) as conn:
-            conn.read_only = True  # transacción de solo lectura
+        with manager.open_profile_connection(
+            store, profile, dbname, query_timeout_ms=timeout if is_mssql else 0
+        ) as conn:
+            if not is_mssql:
+                conn.read_only = True  # transacción de solo lectura
             with conn.cursor() as cur:
-                cur.execute(f"SET statement_timeout = {int(timeout)}")
+                if not is_mssql:
+                    cur.execute(f"SET statement_timeout = {int(timeout)}")
                 cur.execute(sql_text)
                 if cur.description is None:
                     # Sentencia sin resultados (p. ej. SET); no debería ocurrir en READ ONLY
                     return {"ok": True, "columns": [], "rows": [], "row_count": cur.rowcount, "truncated": False, "elapsed_ms": 0}
-                columns = [d.name for d in cur.description]
+                columns = [d[0] for d in cur.description]
                 fetched = cur.fetchmany(max_rows + 1)
                 truncated = len(fetched) > max_rows
                 rows = [[_jsonable(v) for v in row] for row in fetched[:max_rows]]
@@ -426,10 +499,10 @@ def run_query(profile_id: str, dbname: str, body: QueryRequest, request: Request
         }
     except PasswordUnavailable:
         return password_missing_error(profile_id)
-    except (psycopg.Error, OSError) as exc:
-        err = classify_pg_error(exc)
-        # Errores de SQL del usuario: mensaje directo de PostgreSQL
-        if isinstance(exc, psycopg.Error) and err.code == "UNEXPECTED":
+    except DB_EXCEPTIONS as exc:
+        err = classify_db_error(profile.engine, exc)
+        # Errores de SQL del usuario: mensaje directo del servidor
+        if isinstance(exc, (psycopg.Error, pytds.Error)) and err.code == "UNEXPECTED":
             msg = str(exc).strip()
             hint = None
             if isinstance(exc, psycopg.errors.ReadOnlySqlTransaction):
@@ -528,8 +601,14 @@ def build_query(profile_id: str, dbname: str, body: QuerySpec, request: Request)
         select_sql=body.select_sql,
         tail_sql=body.tail_sql,
     )
+    profile = request.app.state.profiles.get(profile_id)
+    dialect = (
+        "sqlserver"
+        if getattr(profile, "engine", None) == Engine.sqlserver
+        else "postgresql"
+    )
     try:
-        sql_text = query_builder.build_query_sql(model)
+        sql_text = query_builder.build_query_sql(model, dialect=dialect)
     except ValueError as exc:
         return _error(422, ApiError(code="VALIDATION", message=str(exc)))
     return {"ok": True, "sql": sql_text}

@@ -4,7 +4,7 @@ Este documento fija la arquitectura del proyecto. **Cualquier IA o colaborador q
 
 ## Qué es
 
-Meridia (nombre interno en código: `pg_diagrammer`) es una app de escritorio para conectarse a PostgreSQL, explorar su estructura (`pg_catalog`) y construir diagramas ER arrastrando tablas a un lienzo, con relaciones y cardinalidad detectadas automáticamente.
+Meridia (nombre interno en código: `pg_diagrammer`) es una app de escritorio para conectarse a PostgreSQL y SQL Server, explorar su estructura (`pg_catalog` / `sys.*`) y construir diagramas ER arrastrando tablas a un lienzo, con relaciones y cardinalidad detectadas automáticamente.
 
 ## Arquitectura: 3 piezas, NO fusionar
 
@@ -33,7 +33,8 @@ sidecar/src/pg_diagrammer (Python, FastAPI + psycopg 3) → toda la lógica de m
 ## Persistencia
 
 - Proyectos/diagramas se guardan como archivo **`.pgdiag`** (JSON versionado con `format_version`), no en SQLite ni en el keychain.
-- Metadatos de PostgreSQL se leen en bloque desde `pg_catalog` (no `information_schema`, no query-por-tabla) y se cachean en `MetadataCache` por conexión+schema.
+- Metadatos se leen en bloque (no `information_schema`, no query-por-tabla): `pg_catalog` en PostgreSQL, catálogos `sys.*` en SQL Server. Ambos motores adaptan sus filas a la MISMA función `assemble()` (introspector.py), que es la única fuente de la derivación de cardinalidad. Se cachean en `MetadataCache` por conexión+schema.
+- El perfil lleva `engine` (`postgresql` | `sqlserver`, default postgresql para retrocompatibilidad) y `auth_method` (`sql` | `windows`; Windows integrada solo aplica a SQL Server: SSPI sin contraseña en Windows, NTLM con `DOMINIO\usuario`+contraseña en otro caso).
 
 ## Estructura de carpetas (mapa, no reorganizar sin razón)
 
@@ -67,7 +68,7 @@ docs/pg-diagrammer-diseno.md → diseño completo, decisiones y trade-offs (fuen
 | Capa | Tecnología fija |
 |---|---|
 | Shell | Tauri 2 (Rust) — no Electron |
-| Backend | Python 3.10+, FastAPI, psycopg 3, Pydantic, keyring |
+| Backend | Python 3.10+, FastAPI, psycopg 3 (PostgreSQL), python-tds (SQL Server), Pydantic, keyring |
 | Empaquetado backend | PyInstaller (CI matricial por plataforma) |
 | Frontend | React 18 + TypeScript + Vite |
 | Canvas de diagramas | @xyflow/react (React Flow) + @dagrejs/dagre para auto-layout |

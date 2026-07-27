@@ -74,6 +74,8 @@ class ProfileStore:
             ssl_mode=data.ssl_mode,
             dbname=data.dbname,
             credential_ref=f"{KEYRING_SERVICE}:{profile_id}",
+            engine=data.engine,
+            auth_method=data.auth_method,
         )
         self._set_password(profile_id, data.password)
         self._profiles[profile_id] = profile
@@ -94,6 +96,8 @@ class ProfileStore:
             ssl_mode=data.ssl_mode,
             dbname=data.dbname,
             credential_ref=existing.credential_ref,
+            engine=data.engine,
+            auth_method=data.auth_method,
         )
         if data.password:
             self._set_password(profile_id, data.password)

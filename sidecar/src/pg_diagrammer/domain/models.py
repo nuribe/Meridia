@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SslMode(str, Enum):
@@ -15,16 +15,45 @@ class SslMode(str, Enum):
     verify_full = "verify-full"
 
 
+class Engine(str, Enum):
+    """Motor de base de datos del perfil. Default postgresql: los perfiles
+    antiguos (sin el campo) cargan sin migración."""
+
+    postgresql = "postgresql"
+    sqlserver = "sqlserver"
+
+
+class AuthMethod(str, Enum):
+    """Método de autenticación (solo relevante para SQL Server).
+
+    - sql: login de SQL Server (usuario/contraseña, keychain).
+    - windows: autenticación integrada de Windows (SSPI si no hay contraseña;
+      NTLM con DOMINIO\\usuario + contraseña en otro caso).
+    """
+
+    sql = "sql"
+    windows = "windows"
+
+
 class ConnectionParams(BaseModel):
     """Parámetros de conexión para pruebas puntuales (la contraseña nunca se persiste)."""
 
     host: str
     port: int = 5432
-    user: str
-    password: str = Field(repr=False)
+    user: str = ""
+    password: str = Field(default="", repr=False)
     dbname: str = "postgres"
     ssl_mode: SslMode = SslMode.prefer
     connect_timeout: int = 8
+    engine: Engine = Engine.postgresql
+    auth_method: AuthMethod = AuthMethod.sql
+
+    @model_validator(mode="after")
+    def _require_user(self):
+        # user solo puede omitirse con autenticación integrada de Windows (SSPI).
+        if not self.user and self.auth_method != AuthMethod.windows:
+            raise ValueError("user es obligatorio salvo con autenticación de Windows")
+        return self
 
 
 class ConnectionProfile(BaseModel):
@@ -34,23 +63,34 @@ class ConnectionProfile(BaseModel):
     name: str
     host: str
     port: int = 5432
-    user: str
+    user: str = ""
     ssl_mode: SslMode = SslMode.prefer
     # Base a la que conecta el perfil. Con pgbouncer debe existir en su pool.
     # Default "postgres" para que los perfiles antiguos (sin este campo) carguen.
     dbname: str = "postgres"
     credential_ref: str
+    engine: Engine = Engine.postgresql
+    auth_method: AuthMethod = AuthMethod.sql
 
 
 class ProfileCreate(BaseModel):
     name: str
     host: str
     port: int = 5432
-    user: str
+    user: str = ""
     # Vacío al editar = conservar la contraseña existente.
     password: str = Field(default="", repr=False)
     dbname: str  # obligatorio: nombre de la base de datos a la que conectar
     ssl_mode: SslMode = SslMode.prefer
+    engine: Engine = Engine.postgresql
+    auth_method: AuthMethod = AuthMethod.sql
+
+    @model_validator(mode="after")
+    def _require_user(self):
+        # user solo puede omitirse con autenticación integrada de Windows (SSPI).
+        if not self.user and self.auth_method != AuthMethod.windows:
+            raise ValueError("user es obligatorio salvo con autenticación de Windows")
+        return self
 
 
 class TableKind(str, Enum):

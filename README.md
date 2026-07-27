@@ -2,7 +2,7 @@
 
 > Orientación y cartografía para tus bases de datos.
 
-**Meridia** es una aplicación de escritorio que te ayuda a **entender y documentar bases de datos PostgreSQL** sin escribir SQL complicado. Te conectas a tu base de datos, exploras sus tablas como si navegaras un mapa, y armas **diagramas visuales** arrastrando tablas a un lienzo. Meridia dibuja sola las relaciones entre ellas (quién apunta a quién, y con qué cardinalidad: 1:1, N:1, N:M).
+**Meridia** es una aplicación de escritorio que te ayuda a **entender y documentar bases de datos PostgreSQL y SQL Server** sin escribir SQL complicado. Te conectas a tu base de datos, exploras sus tablas como si navegaras un mapa, y armas **diagramas visuales** arrastrando tablas a un lienzo. Meridia dibuja sola las relaciones entre ellas (quién apunta a quién, y con qué cardinalidad: 1:1, N:1, N:M).
 
 Si alguna vez te preguntaste *"¿cómo está organizada esta base de datos?"* o *"¿qué tablas se relacionan con esta?"*, Meridia es para ti.
 
@@ -12,7 +12,7 @@ Si alguna vez te preguntaste *"¿cómo está organizada esta base de datos?"* o 
 
 ## ✨ ¿Qué puedes hacer con Meridia?
 
-- **Conectarte a cualquier PostgreSQL** — local o remoto — con solo llenar un formulario (host, puerto, usuario, contraseña y base de datos). Tu contraseña se guarda de forma segura en el llavero de tu sistema operativo, nunca en texto plano.
+- **Conectarte a cualquier PostgreSQL o SQL Server** — local o remoto — con solo llenar un formulario (motor, host, puerto, usuario, contraseña y base de datos). Con SQL Server puedes usar login SQL o **autenticación integrada de Windows** (deja usuario y contraseña vacíos para usar tu sesión actual, o `DOMINIO\usuario` + contraseña para NTLM). Tu contraseña se guarda de forma segura en el llavero de tu sistema operativo, nunca en texto plano.
 - **Explorar tu base de datos** como un árbol: esquemas, tablas, vistas, columnas, llaves primarias (🔑) y foráneas (→), índices y comentarios. Con buscador y filtro por tipo.
 - **Ver el detalle de cada tabla**: sus columnas, qué otras tablas la referencian, y qué funciones o procedimientos la usan. Puedes navegar de una tabla a otra siguiendo sus relaciones.
 - **Crear diagramas ER** arrastrando tablas al lienzo (o con doble clic). Meridia conecta las tablas automáticamente y marca la cardinalidad de cada relación, incluso las relaciones de una tabla consigo misma.
@@ -36,7 +36,7 @@ Meridia se compila desde el código fuente. Necesitas instalar estas herramienta
 
 > 💡 ¿No tienes Rust todavía? Puedes probar Meridia en modo navegador (ver [Alternativa sin Rust](#-alternativa-sin-rust)) y dejar la app de escritorio para después.
 
-No necesitas instalar PostgreSQL: Meridia se conecta a **cualquier servidor PostgreSQL que ya tengas**.
+No necesitas instalar PostgreSQL ni SQL Server: Meridia se conecta a **cualquier servidor que ya tengas** (el driver de SQL Server es Python puro, sin ODBC ni instalaciones extra).
 
 ---
 
@@ -67,9 +67,10 @@ La primera vez, `npm run tauri dev` compila la parte nativa (Rust) y puede tarda
 
 En la pantalla inicial, pulsa **➕ Nueva conexión** e ingresa:
 
-- **Host** y **puerto** de tu servidor (por ejemplo `localhost` y `5432`).
-- **Usuario** y **contraseña**.
-- **Nombre de la base de datos** a la que conectar.
+- **Motor**: PostgreSQL o SQL Server.
+- **Host** y **puerto** de tu servidor (por defecto `5432` en PostgreSQL, `1433` en SQL Server).
+- **Usuario** y **contraseña** (en SQL Server también puedes elegir **Auth: Windows** y dejar ambos vacíos para usar tu sesión actual).
+- **Nombre de la base de datos** a la que conectar (`postgres` o `master` sirven como punto de partida).
 
 Guarda y ¡listo! Ya puedes explorar y diagramar.
 
@@ -92,6 +93,7 @@ Guarda y ¡listo! Ya puedes explorar y diagramar.
 
 - **El arrastrar-y-soltar no funciona en la app de escritorio (Windows).** Ya viene resuelto (`dragDropEnabled: false` en la config). Si compilaste una versión anterior, vuelve a ejecutar `npm run tauri dev` para recompilar. Alternativa siempre válida: **doble clic** en la tabla para agregarla.
 - **La lista de bases de datos aparece vacía.** Suele pasar detrás de un *pooler* (pgbouncer). Usa el nombre exacto de tu base en el formulario, o el campo "Conectar por nombre".
+- **SQL Server no acepta la conexión.** Verifica que el protocolo **TCP/IP esté habilitado** (SQL Server Configuration Manager) y que el puerto (1433 por defecto) sea accesible; con instancias con nombre puede variar. Con Auth: Windows fuera de un dominio, usa `DOMINIO\usuario` + contraseña.
 - **No recuerda mi contraseña al reiniciar.** Si tu sistema no tiene llavero disponible, la contraseña solo dura la sesión; te la volverá a pedir (nunca se guarda en texto plano).
 
 ---
@@ -101,7 +103,7 @@ Guarda y ¡listo! Ya puedes explorar y diagramar.
 Meridia son tres piezas trabajando juntas:
 
 - **Shell nativo (Tauri 2, Rust):** la ventana de la app; lanza el motor y hace de puente seguro.
-- **Motor (Python + FastAPI + psycopg 3):** se conecta a PostgreSQL, lee su estructura con `pg_catalog` y expone una API local protegida con un token.
+- **Motor (Python + FastAPI):** se conecta a la base de datos y expone una API local protegida con un token. Usa `psycopg 3` para PostgreSQL (estructura desde `pg_catalog`) y `python-tds` para SQL Server (estructura desde los catálogos `sys.*`). Ambos motores comparten el mismo modelo de dominio y la misma lógica de cardinalidad.
 - **Interfaz (React + React Flow):** el explorador y el lienzo de diagramas que ves.
 
 El shell y el motor se comunican por `127.0.0.1` con un *handshake*: el shell genera un token aleatorio, el motor abre un puerto efímero y lo anuncia, y toda petición a la API exige ese token. Nada queda expuesto fuera de tu equipo.
@@ -164,7 +166,7 @@ Meridia ya cubre lo esencial, y hay mucho espacio para crecer. Si quieres aprend
 
 Meridia atravesó varias fases y hoy es funcional de punta a punta:
 
-- **Base:** conexión a PostgreSQL, introspección de `pg_catalog`, explorador con búsqueda y filtros, perfiles con contraseña en el llavero.
+- **Base:** conexión a PostgreSQL y SQL Server (login SQL o Windows integrada), introspección de `pg_catalog` / `sys.*`, explorador con búsqueda y filtros, perfiles con contraseña en el llavero.
 - **Diagramas:** lienzo con arrastrar-y-soltar, relaciones automáticas con cardinalidad (incluidas las reflexivas), auto-layout, personalización de nodos, notas y buscador de nodos.
 - **Consultas:** editor SQL de solo lectura con resaltado y autocompletado.
 - **Compartir:** guardar/abrir `.pgdiag` (autocontenido y visible sin conexión), export PNG / SVG / Mermaid / DBML, directorio de diagramas configurable.

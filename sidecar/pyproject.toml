@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "psycopg[binary]>=3.2",
+    "python-tds>=1.15",
     "pydantic>=2.7",
     "keyring>=25",
 ]

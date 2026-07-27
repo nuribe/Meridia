@@ -4,11 +4,9 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-import psycopg
-
 from pg_diagrammer.connections import manager
 from pg_diagrammer.domain.models import ConnectionParams
-from pg_diagrammer.errors import classify_pg_error
+from pg_diagrammer.errors import DB_EXCEPTIONS, classify_db_error
 
 router = APIRouter(tags=["connections"])
 
@@ -17,8 +15,8 @@ router = APIRouter(tags=["connections"])
 def test_connection(params: ConnectionParams):
     try:
         return {"ok": True, **manager.test_connection(params)}
-    except (psycopg.Error, OSError) as exc:
-        err = classify_pg_error(exc)
+    except DB_EXCEPTIONS as exc:
+        err = classify_db_error(params.engine, exc)
         return JSONResponse(status_code=400, content={"ok": False, **err.model_dump()})
 
 
@@ -31,6 +29,6 @@ def list_databases(params: ConnectionParams):
     """
     try:
         return {"ok": True, "databases": manager.list_databases(params)}
-    except (psycopg.Error, OSError) as exc:
-        err = classify_pg_error(exc)
+    except DB_EXCEPTIONS as exc:
+        err = classify_db_error(params.engine, exc)
         return JSONResponse(status_code=400, content={"ok": False, **err.model_dump()})

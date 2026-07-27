@@ -17,6 +17,11 @@ export interface ApiError {
   retriable: boolean;
 }
 
+export type DbEngine = "postgresql" | "sqlserver";
+
+/** Método de autenticación (solo relevante para SQL Server). */
+export type AuthMethod = "sql" | "windows";
+
 export interface Profile {
   id: string;
   name: string;
@@ -25,6 +30,8 @@ export interface Profile {
   user: string;
   ssl_mode: string;
   dbname: string;
+  engine: DbEngine;
+  auth_method: AuthMethod;
 }
 
 export interface ProfileInput {
@@ -35,6 +42,8 @@ export interface ProfileInput {
   password: string;
   dbname: string;
   ssl_mode?: string;
+  engine?: DbEngine;
+  auth_method?: AuthMethod;
 }
 
 export interface DatabaseInfo {
@@ -376,6 +385,8 @@ export interface DiagramSummary {
   name: string;
   profile_id: string;
   dbname: string;
+  /** Motor del perfil del diagrama (null si el perfil ya no existe). */
+  engine: DbEngine | null;
   node_count: number;
   updated_at: string;
 }

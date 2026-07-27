@@ -4,12 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-import psycopg
-
-from pg_diagrammer.connections import manager
+from pg_diagrammer.connections import manager, mssql
 from pg_diagrammer.connections.profiles import PasswordUnavailable
-from pg_diagrammer.domain.models import ProfileCreate
-from pg_diagrammer.errors import ApiError, classify_pg_error
+from pg_diagrammer.domain.models import Engine, ProfileCreate
+from pg_diagrammer.errors import ApiError, DB_EXCEPTIONS, classify_db_error
 
 router = APIRouter(tags=["profiles"])
 
@@ -85,14 +83,19 @@ def list_databases(profile_id: str, request: Request):
     if profile is None:
         return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
     # Conectamos a la base del perfil (con pgbouncer, una que exista en su pool).
-    # Desde cualquier conexión se puede consultar pg_database y obtener TODAS
-    # las bases del servidor.
-    conn_db = getattr(profile, "dbname", None) or "postgres"
+    # Desde cualquier conexión se pueden consultar pg_database / sys.databases
+    # y obtener TODAS las bases del servidor.
+    default_db = "master" if profile.engine == Engine.sqlserver else "postgres"
+    conn_db = getattr(profile, "dbname", None) or default_db
     try:
-        conninfo = store.conninfo(profile, conn_db)
-        databases = manager.list_databases_conninfo(conninfo)
+        if profile.engine == Engine.sqlserver:
+            with manager.open_profile_connection(store, profile, conn_db) as conn:
+                databases = mssql.list_databases_conn(conn)
+        else:
+            conninfo = store.conninfo(profile, conn_db)
+            databases = manager.list_databases_conninfo(conninfo)
         return {"ok": True, "databases": databases}
     except PasswordUnavailable:
         return password_missing_error(profile_id)
-    except (psycopg.Error, OSError) as exc:
-        return _error(400, classify_pg_error(exc))
+    except DB_EXCEPTIONS as exc:
+        return _error(400, classify_db_error(profile.engine, exc))

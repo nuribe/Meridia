@@ -337,3 +337,53 @@ def test_endpoint_parse(tmp_path):
     assert set(body["tables"]) == {"ventas.pedidos", "ventas.clientes"}
     assert body["joins"][0]["join_type"] == "INNER JOIN"
     assert body["joins"][0]["source_columns"] == ["cliente_id"]
+
+
+# --------------------------------------------------------------------------- #
+# Dialecto SQL Server                                                          #
+# --------------------------------------------------------------------------- #
+def test_build_tsql_sin_comillas():
+    model = QueryModel(
+        tables=["dbo.Cerraduras", "dbo.RutasCerraduras"],
+        aliases={"dbo.Cerraduras": "c", "dbo.RutasCerraduras": "r"},
+        joins=[Join("dbo.Cerraduras", "dbo.RutasCerraduras", "INNER JOIN", ["Id"], ["IdCerradura"])],
+    )
+    sql = _norm(build_query_sql(model, dialect="sqlserver"))
+    assert sql == (
+        "SELECT * FROM dbo.Cerraduras c "
+        "INNER JOIN dbo.RutasCerraduras r ON c.Id = r.IdCerradura"
+    )
+
+
+def test_build_tsql_corchetes_solo_si_hace_falta():
+    model = QueryModel(
+        tables=["dbo.Order Details", "dbo.User"],
+        aliases={"dbo.Order Details": "d", "dbo.User": "u"},
+        joins=[Join("dbo.Order Details", "dbo.User", "INNER JOIN", ["user id"], ["Id"])],
+    )
+    sql = _norm(build_query_sql(model, dialect="sqlserver"))
+    # Espacios y palabras reservadas van con corchetes; el resto sin citar.
+    assert "[Order Details]" in sql
+    assert "[User]" in sql
+    assert "d.[user id] = u.Id" in sql
+
+
+def test_build_default_sigue_siendo_postgres():
+    model = QueryModel(tables=["ventas.pedidos"])
+    assert '"ventas"."pedidos"' in build_query_sql(model)
+
+
+def test_parse_tsql_con_corchetes():
+    sql = (
+        "SELECT * FROM [dbo].[pedidos] p "
+        "INNER JOIN dbo.clientes c ON p.[cliente_id] = c.id"
+    )
+    known = {
+        "dbo.pedidos": "dbo.pedidos", "pedidos": "dbo.pedidos",
+        "dbo.clientes": "dbo.clientes", "clientes": "dbo.clientes",
+    }
+    model = parse_query_sql(sql, known)
+    assert model.tables == ["dbo.pedidos", "dbo.clientes"]
+    assert model.joins[0].source_columns == ["cliente_id"]
+    assert model.joins[0].target_columns == ["id"]
+    assert not model.unresolved

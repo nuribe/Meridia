@@ -110,10 +110,43 @@ def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def _quote_table(key: str) -> str:
-    """"schema.tabla" -> '"schema"."tabla"'."""
+_PLAIN_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Palabras reservadas comunes de T-SQL que obligan a citar con corchetes.
+_TSQL_RESERVED = {
+    "add", "all", "alter", "and", "any", "as", "asc", "backup", "begin",
+    "between", "by", "case", "check", "column", "constraint", "create",
+    "cross", "current", "database", "default", "delete", "desc", "distinct",
+    "drop", "else", "end", "escape", "except", "exec", "exists", "file",
+    "for", "foreign", "from", "full", "function", "grant", "group", "having",
+    "in", "index", "inner", "insert", "intersect", "into", "is", "join",
+    "key", "left", "like", "merge", "not", "null", "on", "or", "order",
+    "outer", "over", "percent", "plan", "primary", "procedure", "public",
+    "return", "right", "rule", "select", "set", "table", "then", "to", "top",
+    "transaction", "trigger", "union", "unique", "update", "user", "values",
+    "view", "when", "where", "while", "with",
+}
+
+
+def _quote_ident_tsql(name: str) -> str:
+    """SQL Server: sin citar salvo que el nombre lo exija (menos ruido).
+
+    Solo se usan [corchetes] si el identificador no es "regular" (espacios,
+    símbolos, empieza por dígito) o es una palabra reservada de T-SQL.
+    """
+    if _PLAIN_IDENT.match(name) and name.lower() not in _TSQL_RESERVED:
+        return name
+    return "[" + name.replace("]", "]]") + "]"
+
+
+def _ident_quoter(dialect: str):
+    return _quote_ident_tsql if dialect == "sqlserver" else _quote_ident
+
+
+def _quote_table(key: str, quote=_quote_ident) -> str:
+    """"schema.tabla" -> '"schema"."tabla"' (o schema.tabla en T-SQL)."""
     parts = key.split(".", 1)
-    return ".".join(_quote_ident(p) for p in parts)
+    return ".".join(quote(p) for p in parts)
 
 
 _SAFE_ALIAS = re.compile(r"[^A-Za-z0-9_]")
@@ -144,8 +177,11 @@ def _make_aliases(tables: list[str], given: dict[str, str] | None) -> dict[str, 
 # --------------------------------------------------------------------------- #
 # Diagrama -> SQL                                                              #
 # --------------------------------------------------------------------------- #
-def build_query_sql(model: QueryModel) -> str:
-    """Traduce tablas + joins a una sentencia SELECT de PostgreSQL.
+def build_query_sql(model: QueryModel, dialect: str = "postgresql") -> str:
+    """Traduce tablas + joins a una sentencia SELECT del dialecto indicado.
+
+    dialect: "postgresql" (identificadores entre comillas dobles) o
+    "sqlserver" (sin citar; [corchetes] solo cuando el nombre lo exige).
 
     Ordena las tablas en un encadenado FROM + JOIN coherente: la tabla base es
     la que nunca aparece como destino de un join (o la primera). Cada join se
@@ -158,6 +194,7 @@ def build_query_sql(model: QueryModel) -> str:
     if not tables:
         raise ValueError("Se requiere al menos una tabla para construir la consulta.")
 
+    quote = _ident_quoter(dialect)
     aliases = _make_aliases(tables, model.aliases)
     joins = [
         Join(
@@ -174,7 +211,7 @@ def build_query_sql(model: QueryModel) -> str:
     targets = {j.target for j in joins}
     base = next((t for t in tables if t not in targets), tables[0])
     included: list[str] = [base]
-    lines: list[str] = [f"FROM {_quote_table(base)} {aliases[base]}"]
+    lines: list[str] = [f"FROM {_quote_table(base, quote)} {aliases[base]}"]
 
     remaining = list(joins)
     extra_conditions: list[str] = []
@@ -187,7 +224,7 @@ def build_query_sql(model: QueryModel) -> str:
             if s_in and t_in:
                 # Ciclo: no se puede volver a unir la tabla; se preserva el ON
                 # como condición extra para no perder el join.
-                cond = _on_condition(j, aliases, flip=False)
+                cond = _on_condition(j, aliases, flip=False, quote=quote)
                 if cond:
                     extra_conditions.append(cond)
                 remaining.remove(j)
@@ -199,10 +236,10 @@ def build_query_sql(model: QueryModel) -> str:
             new_key = j.source if flip else j.target
             jt = _flip_join_type(j.join_type) if flip else j.join_type
             if jt == "CROSS JOIN" or not (j.source_columns and j.target_columns):
-                lines.append(f"CROSS JOIN {_quote_table(new_key)} {aliases[new_key]}")
+                lines.append(f"CROSS JOIN {_quote_table(new_key, quote)} {aliases[new_key]}")
             else:
-                on = _on_condition(j, aliases, flip=flip)
-                lines.append(f"{jt} {_quote_table(new_key)} {aliases[new_key]} ON {on}")
+                on = _on_condition(j, aliases, flip=flip, quote=quote)
+                lines.append(f"{jt} {_quote_table(new_key, quote)} {aliases[new_key]} ON {on}")
             included.append(new_key)
             remaining.remove(j)
             progress = True
@@ -210,10 +247,10 @@ def build_query_sql(model: QueryModel) -> str:
     # Tablas sin ningún join (o joins que quedaron desconectados): CROSS JOIN.
     for t in tables:
         if t not in included:
-            lines.append(f"CROSS JOIN {_quote_table(t)} {aliases[t]}")
+            lines.append(f"CROSS JOIN {_quote_table(t, quote)} {aliases[t]}")
             included.append(t)
     for j in remaining:
-        cond = _on_condition(j, aliases, flip=False)
+        cond = _on_condition(j, aliases, flip=False, quote=quote)
         if cond:
             extra_conditions.append(cond)
 
@@ -227,12 +264,12 @@ def build_query_sql(model: QueryModel) -> str:
     return sql
 
 
-def _on_condition(j: Join, aliases: dict[str, str], flip: bool) -> str:
+def _on_condition(j: Join, aliases: dict[str, str], flip: bool, quote=_quote_ident) -> str:
     sa = aliases[j.source]
     ta = aliases[j.target]
     pairs = zip(j.source_columns, j.target_columns)
     return " AND ".join(
-        f"{sa}.{_quote_ident(sc)} = {ta}.{_quote_ident(tc)}" for sc, tc in pairs
+        f"{sa}.{quote(sc)} = {ta}.{quote(tc)}" for sc, tc in pairs
     )
 
 
@@ -242,10 +279,10 @@ def _on_condition(j: Join, aliases: dict[str, str], flip: bool) -> str:
 _COMMENT_LINE = re.compile(r"--[^\n]*")
 _COMMENT_BLOCK = re.compile(r"/\*.*?\*/", re.DOTALL)
 
-_QUALIFIED = r'(?:"[^"]+"|\w+)(?:\.(?:"[^"]+"|\w+))?'
+_QUALIFIED = r'(?:"[^"]+"|\[[^\]]+\]|\w+)(?:\.(?:"[^"]+"|\[[^\]]+\]|\w+))?'
 _TABLE_REF = re.compile(
     r"(?P<rel>" + _QUALIFIED + r")"
-    r'(?:\s+(?:AS\s+)?(?P<alias>"[^"]+"|\w+))?',
+    r'(?:\s+(?:AS\s+)?(?P<alias>"[^"]+"|\[[^\]]+\]|\w+))?',
     re.IGNORECASE,
 )
 
@@ -260,7 +297,9 @@ _JOIN_HEAD = re.compile(
     r"(?P<type>LEFT|RIGHT|FULL|INNER|CROSS)?\s*(?:OUTER\s+)?JOIN\s+", re.IGNORECASE
 )
 
-_COLREF = re.compile(r'(?:"([^"]+)"|(\w+))\s*\.\s*(?:"([^"]+)"|(\w+))')
+_COLREF = re.compile(
+    r'(?:"([^"]+)"|\[([^\]]+)\]|(\w+))\s*\.\s*(?:"([^"]+)"|\[([^\]]+)\]|(\w+))'
+)
 
 
 def _strip_comments(sql: str) -> str:
@@ -273,6 +312,8 @@ def _unquote(ident: str) -> str:
     ident = ident.strip()
     if ident.startswith('"') and ident.endswith('"'):
         return ident[1:-1].replace('""', '"')
+    if ident.startswith("[") and ident.endswith("]"):
+        return ident[1:-1].replace("]]", "]")
     return ident
 
 
@@ -281,15 +322,22 @@ def _norm_rel(rel: str) -> str:
 
 
 def _split_qualified(rel: str) -> list[str]:
-    """Divide "a.b" respetando comillas ("esquema.raro"."tabla")."""
+    """Divide "a.b" respetando comillas y corchetes ([esquema.raro].[tabla])."""
     parts: list[str] = []
     buf = ""
     in_q = False
+    in_b = False
     for ch in rel:
-        if ch == '"':
+        if ch == '"' and not in_b:
             in_q = not in_q
             buf += ch
-        elif ch == "." and not in_q:
+        elif ch == "[" and not in_q:
+            in_b = True
+            buf += ch
+        elif ch == "]" and in_b:
+            in_b = False
+            buf += ch
+        elif ch == "." and not in_q and not in_b:
             parts.append(buf)
             buf = ""
         else:
@@ -303,6 +351,7 @@ def _find_top_level(sql: str, pattern: re.Pattern) -> int | None:
     depth = 0
     in_s = False  # comilla simple
     in_d = False  # comilla doble
+    in_b = False  # corchetes de T-SQL
     i = 0
     while i < len(sql):
         ch = sql[i]
@@ -312,10 +361,15 @@ def _find_top_level(sql: str, pattern: re.Pattern) -> int | None:
         elif in_d:
             if ch == '"':
                 in_d = False
+        elif in_b:
+            if ch == "]":
+                in_b = False
         elif ch == "'":
             in_s = True
         elif ch == '"':
             in_d = True
+        elif ch == "[":
+            in_b = True
         elif ch == "(":
             depth += 1
         elif ch == ")":
@@ -331,7 +385,7 @@ def _find_top_level(sql: str, pattern: re.Pattern) -> int | None:
 def _iter_top_level(sql: str, pattern: re.Pattern):
     """Todas las posiciones de `pattern` a nivel superior (depth 0)."""
     depth = 0
-    in_s = in_d = False
+    in_s = in_d = in_b = False
     i = 0
     while i < len(sql):
         ch = sql[i]
@@ -341,10 +395,15 @@ def _iter_top_level(sql: str, pattern: re.Pattern):
         elif in_d:
             if ch == '"':
                 in_d = False
+        elif in_b:
+            if ch == "]":
+                in_b = False
         elif ch == "'":
             in_s = True
         elif ch == '"':
             in_d = True
+        elif ch == "[":
+            in_b = True
         elif ch == "(":
             depth += 1
         elif ch == ")":
@@ -494,8 +553,8 @@ def _analyze_on(
     alias aparece en el ON. Las columnas se agrupan por a qué lado pertenecen.
     """
     other: str | None = None
-    for q1, w1, _q2, _w2 in _COLREF.findall(on):
-        al = q1 or w1
+    for q1, b1, w1, _q2, _b2, _w2 in _COLREF.findall(on):
+        al = q1 or b1 or w1
         mapped = alias_map.get(al)
         if al != alias and mapped and mapped != key:
             other = mapped
@@ -505,9 +564,9 @@ def _analyze_on(
 
     src_cols: list[str] = []
     tgt_cols: list[str] = []
-    for q1, w1, q2, w2 in _COLREF.findall(on):
-        al = q1 or w1
-        col = q2 or w2
+    for q1, b1, w1, q2, b2, w2 in _COLREF.findall(on):
+        al = q1 or b1 or w1
+        col = q2 or b2 or w2
         mapped = alias_map.get(al)
         if mapped == other and col not in src_cols:
             src_cols.append(col)

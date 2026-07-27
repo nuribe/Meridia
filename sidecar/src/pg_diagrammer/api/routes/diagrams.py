@@ -50,6 +50,14 @@ def set_diagrams_dir(data: DiagramsDir, request: Request):
 @router.get("/diagrams")
 def list_diagrams(request: Request, profile_id: str | None = None, dbname: str | None = None):
     store = request.app.state.diagrams
+    profiles = request.app.state.profiles
+
+    def _engine(pid: str) -> str | None:
+        """Motor del perfil del diagrama (None si el perfil ya no existe)."""
+        profile = profiles.get(pid)
+        engine = getattr(profile, "engine", None)
+        return getattr(engine, "value", engine) if profile else None
+
     return {
         "ok": True,
         "diagrams": [
@@ -58,6 +66,7 @@ def list_diagrams(request: Request, profile_id: str | None = None, dbname: str |
                 "name": d.name,
                 "profile_id": d.profile_id,
                 "dbname": d.dbname,
+                "engine": _engine(d.profile_id),
                 "node_count": len(d.nodes),
                 "updated_at": d.updated_at.isoformat(),
             }

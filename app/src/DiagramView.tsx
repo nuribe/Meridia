@@ -920,7 +920,9 @@ function DiagramCanvas({
               <option value="">Biblioteca…</option>
               {saved.map((d) => (
                 <option key={d.id} value={d.id}>
+                  {d.engine === "sqlserver" ? "🗄️ " : d.engine === "postgresql" ? "🐘 " : ""}
                   {d.name} · {d.dbname} ({d.node_count} tablas)
+                  {d.engine === "sqlserver" ? " · SQL Server" : d.engine === "postgresql" ? " · PostgreSQL" : ""}
                 </option>
               ))}
             </select>

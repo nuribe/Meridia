@@ -2,7 +2,7 @@
  * Flujo principal: perfiles de conexión → bases de datos → explorador → diagramas.
  */
 import { useEffect, useState } from "react";
-import { api, health, type ApiError, type DatabaseInfo, type PgDiagFile, type Profile } from "./api/client";
+import { api, health, type ApiError, type AuthMethod, type DatabaseInfo, type DbEngine, type PgDiagFile, type Profile } from "./api/client";
 import Explorer from "./Explorer";
 import DiagramView, { OfflineDiagramView } from "./DiagramView";
 import ThemeMenu from "./ThemeMenu";
@@ -104,7 +104,16 @@ function ProfilesScreen({
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [keychain, setKeychain] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const emptyForm = { name: "", host: "localhost", port: 5432, user: "postgres", password: "", ssl_mode: "prefer", dbname: "postgres" };
+  const emptyForm = {
+    name: "", host: "localhost", port: 5432, user: "postgres", password: "",
+    ssl_mode: "prefer", dbname: "postgres",
+    engine: "postgresql" as DbEngine, auth_method: "sql" as AuthMethod,
+  };
+  // Defaults sugeridos al cambiar de motor en el formulario.
+  const engineDefaults: Record<DbEngine, { port: number; user: string; dbname: string }> = {
+    postgresql: { port: 5432, user: "postgres", dbname: "postgres" },
+    sqlserver: { port: 1433, user: "sa", dbname: "master" },
+  };
   const [form, setForm] = useState(emptyForm);
   // Perfil que se está editando (null = creando uno nuevo).
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -140,7 +149,11 @@ function ProfilesScreen({
   function startEdit(p: Profile) {
     setEditingId(p.id);
     // La contraseña se deja vacía: vacío = conservar la existente.
-    setForm({ name: p.name, host: p.host, port: p.port, user: p.user, password: "", ssl_mode: p.ssl_mode, dbname: p.dbname });
+    setForm({
+      name: p.name, host: p.host, port: p.port, user: p.user, password: "",
+      ssl_mode: p.ssl_mode, dbname: p.dbname,
+      engine: p.engine ?? "postgresql", auth_method: p.auth_method ?? "sql",
+    });
     setError("");
     setShowForm(true);
   }
@@ -151,7 +164,23 @@ function ProfilesScreen({
     setForm(emptyForm);
   }
 
-  const formValid = !!(form.name && form.host && form.user && form.dbname);
+  const winAuth = form.engine === "sqlserver" && form.auth_method === "windows";
+  // Con auth integrada de Windows el usuario puede ir vacío (usa la sesión actual).
+  const formValid = !!(form.name && form.host && form.dbname && (form.user || winAuth));
+
+  function switchEngine(engine: DbEngine) {
+    const prev = engineDefaults[form.engine];
+    const next = engineDefaults[engine];
+    // Solo pisa los campos que el usuario no ha personalizado.
+    setForm({
+      ...form,
+      engine,
+      auth_method: engine === "sqlserver" ? form.auth_method : "sql",
+      port: form.port === prev.port ? next.port : form.port,
+      user: form.user === prev.user ? next.user : form.user,
+      dbname: form.dbname === prev.dbname ? next.dbname : form.dbname,
+    });
+  }
 
   async function save() {
     if (!formValid) return;
@@ -189,7 +218,7 @@ function ProfilesScreen({
         </div>
         <div className="text-center mb-4">
           <h1 className="fs-3 mb-1">🐘 Meridia</h1>
-          <p className="text-body-secondary mb-0">Explora PostgreSQL y crea diagramas ER</p>
+          <p className="text-body-secondary mb-0">Explora PostgreSQL y SQL Server y crea diagramas ER</p>
         </div>
 
         {!keychain && (
@@ -209,9 +238,11 @@ function ProfilesScreen({
                     className="btn btn-link text-decoration-none text-start flex-grow-1 p-0"
                     onClick={() => onOpen(p)}
                   >
-                    <span className="fw-semibold">🐘 {p.name}</span>{" "}
+                    <span className="fw-semibold">{p.engine === "sqlserver" ? "🗄️" : "🐘"} {p.name}</span>{" "}
                     <small className="text-body-secondary">
-                      {p.user}@{p.host}:{p.port}/{p.dbname} · SSL {p.ssl_mode}
+                      {p.engine === "sqlserver"
+                        ? `${p.auth_method === "windows" ? (p.user || "Windows") : p.user}@${p.host}:${p.port}/${p.dbname} · SQL Server`
+                        : `${p.user}@${p.host}:${p.port}/${p.dbname} · SSL ${p.ssl_mode}`}
                     </small>
                   </button>
                   <button
@@ -241,19 +272,34 @@ function ProfilesScreen({
             </div>
             <div className="card-body">
               <div className="row g-2">
+                <div className="col-12">
+                  <select className="form-select" value={form.engine}
+                          onChange={(e) => switchEngine(e.target.value as DbEngine)}>
+                    <option value="postgresql">Motor: PostgreSQL</option>
+                    <option value="sqlserver">Motor: SQL Server</option>
+                  </select>
+                </div>
                 <div className="col-7">
                   <input className="form-control" placeholder="Nombre del perfil" value={form.name}
                          onChange={(e) => setForm({ ...form, name: e.target.value })} />
                 </div>
                 <div className="col-5">
-                  <select className="form-select" value={form.ssl_mode}
-                          onChange={(e) => setForm({ ...form, ssl_mode: e.target.value })}>
-                    <option value="disable">SSL: disable</option>
-                    <option value="prefer">SSL: prefer</option>
-                    <option value="require">SSL: require</option>
-                    <option value="verify-ca">SSL: verify-ca</option>
-                    <option value="verify-full">SSL: verify-full</option>
-                  </select>
+                  {form.engine === "sqlserver" ? (
+                    <select className="form-select" value={form.auth_method}
+                            onChange={(e) => setForm({ ...form, auth_method: e.target.value as AuthMethod })}>
+                      <option value="sql">Auth: SQL Server</option>
+                      <option value="windows">Auth: Windows</option>
+                    </select>
+                  ) : (
+                    <select className="form-select" value={form.ssl_mode}
+                            onChange={(e) => setForm({ ...form, ssl_mode: e.target.value })}>
+                      <option value="disable">SSL: disable</option>
+                      <option value="prefer">SSL: prefer</option>
+                      <option value="require">SSL: require</option>
+                      <option value="verify-ca">SSL: verify-ca</option>
+                      <option value="verify-full">SSL: verify-full</option>
+                    </select>
+                  )}
                 </div>
                 <div className="col-8">
                   <input className="form-control" placeholder="Host" value={form.host}
@@ -264,12 +310,18 @@ function ProfilesScreen({
                          onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
                 </div>
                 <div className="col-6">
-                  <input className="form-control" placeholder="Usuario" value={form.user}
+                  <input className="form-control"
+                         placeholder={winAuth ? "DOMINIO\\usuario (vacío = usuario actual)" : "Usuario"}
+                         value={form.user}
                          onChange={(e) => setForm({ ...form, user: e.target.value })} />
                 </div>
                 <div className="col-6">
                   <input className="form-control"
-                         placeholder={editingId ? "Contraseña (vacío = sin cambios)" : "Contraseña"}
+                         placeholder={
+                           winAuth
+                             ? "Contraseña (vacío = sesión de Windows)"
+                             : editingId ? "Contraseña (vacío = sin cambios)" : "Contraseña"
+                         }
                          type="password" value={form.password}
                          onChange={(e) => setForm({ ...form, password: e.target.value })}
                          onKeyDown={(e) => e.key === "Enter" && !busy && formValid && void save()} />
@@ -282,8 +334,13 @@ function ProfilesScreen({
                     onChange={(e) => setForm({ ...form, dbname: e.target.value })}
                   />
                   <div className="form-text">
-                    Base a la que conectar. Con <strong>pgbouncer</strong> u otro pooler, indica una
-                    base que exista en su pool. Desde ella se listan las demás del servidor.
+                    {form.engine === "sqlserver" ? (
+                      <>Base a la que conectar (p. ej. <strong>master</strong>). Desde ella se listan
+                      las demás bases del servidor.</>
+                    ) : (
+                      <>Base a la que conectar. Con <strong>pgbouncer</strong> u otro pooler, indica una
+                      base que exista en su pool. Desde ella se listan las demás del servidor.</>
+                    )}
                   </div>
                 </div>
               </div>
