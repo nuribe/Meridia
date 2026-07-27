@@ -57,7 +57,36 @@ Produce dos artefactos en Windows:
 
 El motor Python viaja empaquetado dentro (PyInstaller) — el usuario final no necesita nada más.
 
-**Descarga directa:** cada commit en `main` dispara el workflow `.github/workflows/standalone.yml`, que compila el ejecutable de Windows y lo publica en el pre-release **`latest`** de la página de *Releases* (instalador + ZIP portable, se reemplazan en cada commit). Cada build incluye un **`NOVEDADES.md`** con las mejoras desde la última versión etiquetada: es el cuerpo del release, un archivo descargable y también viaja dentro del ZIP portable. Al publicar un tag `v*` se generan además los ejecutables de macOS y Linux en un release versionado con sus propias notas.
+**Descarga directa:** cada commit en `main` dispara el workflow `.github/workflows/standalone.yml`, que compila el ejecutable de Windows y lo publica en el pre-release **`latest`** de la página de *Releases* (instalador + ZIP portable, se reemplazan en cada commit). Al publicar un tag `v*` se generan además los ejecutables de macOS y Linux en un release versionado.
+
+### 🔢 Versión de cada build
+
+Cada compilación lleva su propio número, aunque el enlace de descarga no cambie:
+
+| Cuándo | Versión | Ejemplo |
+|---|---|---|
+| Commit en `main` | Versión base + número de ejecución del workflow | `0.1.0+build.42` |
+| Tag `v*` | La versión del tag, limpia | `1.2.0` |
+| Compilando en local | Versión base + `local` | `0.1.0+local` |
+
+El número aparece en tres sitios que siempre coinciden: el **título del release**, la cabecera del **`NOVEDADES.md`** y la **pantalla inicial de la app**, bajo el nombre. Al reportar un problema, ese es el dato que hace falta.
+
+> ℹ️ El tag del pre-release rodante sigue siendo `latest` a propósito: así la URL de descarga de "lo último" nunca cambia, y la lista de *Releases* no se llena con una entrada por commit.
+
+### 📄 Qué documenta cada build
+
+`scripts/release_notes.py` genera un **`NOVEDADES.md`** que es a la vez el cuerpo del release, un archivo descargable suelto y un archivo dentro del ZIP portable. Incluye:
+
+- **Qué cambia**, con el texto completo de cada commit desde la última versión etiquetada — no solo los títulos, porque el *porqué* de un cambio suele estar en el cuerpo.
+- **Qué trae la descarga**: instalador y ZIP portable, qué contiene cada uno, requisitos, y los archivos publicados con su tamaño real.
+- **Qué sabe hacer Meridia**, leído de este mismo README para que no pueda quedarse desactualizado.
+- **Trazabilidad**: versión, commit completo, rama, fecha y las versiones de Python, Node y Rust con las que se compiló.
+
+Puedes generarlo a mano para revisarlo antes de publicar:
+
+```bash
+python scripts/release_notes.py --version 0.1.0+build.42 --print
+```
 
 ---
 

@@ -7,6 +7,7 @@ import Explorer from "./Explorer";
 import DiagramView, { OfflineDiagramView } from "./DiagramView";
 import ThemeMenu from "./ThemeMenu";
 import { openTextFile } from "./files";
+import { APP_VERSION, IS_DEV_BUILD } from "./version";
 import { registerZoomShortcuts } from "./zoom";
 
 type View =
@@ -219,7 +220,20 @@ function ProfilesScreen({
         </div>
         <div className="text-center mb-4">
           <h1 className="fs-3 mb-1">🐘 Meridia</h1>
-          <p className="text-body-secondary mb-0">Explora PostgreSQL y SQL Server y crea diagramas ER</p>
+          <p className="text-body-secondary mb-1">Explora PostgreSQL y SQL Server y crea diagramas ER</p>
+          {/* Versión de la build: es lo primero que hace falta saber al
+              reportar un problema, y coincide con el nombre del release. */}
+          <span
+            className="badge text-bg-light border font-monospace fw-normal"
+            title={
+              IS_DEV_BUILD
+                ? "Build local sin versionar"
+                : "Versión de esta build. Indícala al reportar un problema."
+            }
+            style={{ fontSize: 11, cursor: "default" }}
+          >
+            v{APP_VERSION}
+          </span>
         </div>
 
         {!keychain && (

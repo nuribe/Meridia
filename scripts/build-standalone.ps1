@@ -15,11 +15,27 @@
 # actual del usuario, asi que funcionan en otra maquina si su base tiene esas
 # tablas). Por defecto se incluyen los de %USERPROFILE%\.pg-diagrammer\diagrams.
 param(
-    [string]$DiagramsDir = ""
+    [string]$DiagramsDir = "",
+    # Numero de build. Se compone como "<version base>+build.<N>", igual que en
+    # CI. Sin valor queda "<version base>+local".
+    [string]$BuildNumber = ""
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+
+# --- Version de esta build ----------------------------------------------------
+$baseVersion = (Get-Content "$root\app\src-tauri\tauri.conf.json" -Raw |
+    ConvertFrom-Json).version
+if ($BuildNumber) {
+    $appVersion = "$baseVersion+build.$BuildNumber"
+} else {
+    $appVersion = "$baseVersion+local"
+}
+# La lee el frontend por import.meta.env para mostrarla en la pantalla inicial.
+$env:VITE_APP_VERSION = $appVersion
+Write-Host ""
+Write-Host "Version de esta build: $appVersion" -ForegroundColor Cyan
 
 # Procesos de builds/pruebas anteriores bloquean los exe (el onefile de
 # PyInstaller lanza un proceso hijo con el mismo nombre): se cierran primero.
@@ -32,7 +48,8 @@ Write-Host ""
 Write-Host "[1/3] Empaquetando sidecar Python con PyInstaller..." -ForegroundColor Cyan
 Set-Location "$root\sidecar"
 
-$venvPy = ".\.venv\Scripts\python.exe"
+# Ruta absoluta: mas abajo se usa desde la raiz del repo, no solo desde sidecar.
+$venvPy = "$root\sidecar\.venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) {
     python -m venv .venv
 }
@@ -95,6 +112,13 @@ New-Item -ItemType Directory -Path $portable | Out-Null
 Copy-Item "$release\pg-diagrammer.exe" "$portable\Meridia.exe"
 Copy-Item "$release\pg-diagrammer-sidecar.exe" "$portable\pg-diagrammer-sidecar.exe"
 
+# Documentacion de la build: se genera despues de compilar para poder listar
+# los archivos reales, y viaja dentro del ZIP portable.
+Set-Location $root
+& $venvPy "scripts\release_notes.py" --version $appVersion
+if ($LASTEXITCODE -ne 0) { throw "No se pudo generar NOVEDADES.md" }
+Copy-Item "$out\NOVEDADES.md" "$portable\NOVEDADES.md" -Force
+
 # Diagramas incluidos en el portable (biblioteca inicial).
 $diagSrc = $DiagramsDir
 if (-not $diagSrc) {
@@ -113,10 +137,11 @@ if ($diagSrc -and (Test-Path $diagSrc)) {
 Compress-Archive -Path "$portable\*" -DestinationPath "$out\Meridia-portable-win64.zip" -Force
 
 Write-Host ""
-Write-Host "Listo." -ForegroundColor Green
+Write-Host "Listo: $appVersion" -ForegroundColor Green
 Get-ChildItem "$release\bundle\nsis\*-setup.exe" -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Host "  Instalador: $($_.FullName)" }
 Write-Host "  Portable:   $out\Meridia-portable-win64.zip"
+Write-Host "  Novedades:  $out\NOVEDADES.md"
 Write-Host ""
 Write-Host "Nota: la version portable requiere WebView2 (preinstalado en Windows 10/11;"
 Write-Host "el instalador NSIS lo descarga solo si falta)."
