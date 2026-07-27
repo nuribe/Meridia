@@ -1,13 +1,17 @@
 """Persistencia de diagramas como archivos .pgdiag (JSON versionado).
 
-Un archivo por diagrama en <dir>/<id>.pgdiag. El directorio es configurable:
-por defecto <data_dir>/diagrams, pero el usuario puede elegir otra carpeta
-(se recuerda en <data_dir>/settings.json). El formato lleva format_version
-para poder migrar en el futuro.
+Un archivo por diagrama en <dir>/<id>.pgdiag. El directorio es configurable,
+con esta precedencia:
+1. Elección explícita del usuario (se recuerda en <data_dir>/settings.json).
+2. Variable PG_DIAGRAMMER_DIAGRAMS_DIR (la fija main.py en modo portable:
+   carpeta `diagrams` junto al ejecutable empaquetado).
+3. Default: <data_dir>/diagrams.
+El formato lleva format_version para poder migrar en el futuro.
 """
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +40,9 @@ class DiagramStore:
                     return Path(d)
         except Exception:
             pass
+        env = os.environ.get("PG_DIAGRAMMER_DIAGRAMS_DIR")
+        if env:
+            return Path(env)
         return self._default_dir
 
     def set_dir(self, path: str | Path) -> Path:

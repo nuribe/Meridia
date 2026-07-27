@@ -1,0 +1,81 @@
+name: Standalone
+
+# Genera los ejecutables standalone (sidecar PyInstaller + app Tauri).
+# Se dispara manualmente o al publicar un tag v*.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            exe: .exe
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            exe: ""
+          - os: ubuntu-22.04
+            triple: x86_64-unknown-linux-gnu
+            exe: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Dependencias de sistema (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Sidecar con PyInstaller
+        working-directory: sidecar
+        run: |
+          pip install -e . pyinstaller
+          pyinstaller --onefile --name pg-diagrammer-sidecar \
+            --collect-all uvicorn --collect-all keyring \
+            --collect-all psycopg --collect-all psycopg_binary \
+            --collect-all pytds \
+            --noconfirm --clean scripts/pyinstaller_entry.py
+        shell: bash
+
+      - name: Colocar sidecar para Tauri (externalBin)
+        run: |
+          mkdir -p app/src-tauri/binaries
+          cp "sidecar/dist/pg-diagrammer-sidecar${{ matrix.exe }}" \
+             "app/src-tauri/binaries/pg-diagrammer-sidecar-${{ matrix.triple }}${{ matrix.exe }}"
+        shell: bash
+
+      - name: Build Tauri
+        working-directory: app
+        run: |
+          npm ci
+          npm run tauri build -- --config src-tauri/tauri.standalone.json
+        shell: bash
+
+      - name: Publicar artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: meridia-${{ matrix.triple }}
+          path: |
+            app/src-tauri/target/release/bundle/nsis/*.exe
+            app/src-tauri/target/release/bundle/msi/*.msi
+            app/src-tauri/target/release/bundle/dmg/*.dmg
+            app/src-tauri/target/release/bundle/macos/*.app
+            app/src-tauri/target/release/bundle/appimage/*.AppImage
+            app/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: warn

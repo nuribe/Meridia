@@ -16,6 +16,7 @@ import os
 import secrets
 import socket
 import sys
+from pathlib import Path
 
 import uvicorn
 
@@ -24,7 +25,19 @@ from pg_diagrammer.api.app import create_app
 HOST = "127.0.0.1"
 
 
+def _detect_portable_diagrams() -> None:
+    """Modo portable: si el ejecutable empaquetado (PyInstaller) tiene una
+    carpeta `diagrams` al lado, se usa como biblioteca por defecto. No pisa
+    la elección explícita del usuario guardada en settings.json."""
+    if not getattr(sys, "frozen", False):
+        return
+    candidate = Path(sys.executable).resolve().parent / "diagrams"
+    if candidate.is_dir():
+        os.environ.setdefault("PG_DIAGRAMMER_DIAGRAMS_DIR", str(candidate))
+
+
 def main() -> None:
+    _detect_portable_diagrams()
     token = os.environ.get("PG_DIAGRAMMER_TOKEN")
     if not token:
         # Arranque manual: generamos token y lo mostramos por stderr.

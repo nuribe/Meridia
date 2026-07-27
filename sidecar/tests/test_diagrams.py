@@ -159,3 +159,23 @@ def test_listar_todos_sin_filtro(tmp_path):
     c.post("/api/v1/diagrams", headers=H, json={"name": "B", "profile_id": "p2", "dbname": "d2", "nodes": NODES})
     # sin filtros: devuelve todos, sin importar profile/dbname
     assert len(c.get("/api/v1/diagrams", headers=H).json()["diagrams"]) == 2
+
+
+def test_dir_portable_por_env(tmp_path, monkeypatch):
+    """PG_DIAGRAMMER_DIAGRAMS_DIR (modo portable) fija la biblioteca por
+    defecto, pero settings.json (eleccion del usuario) tiene prioridad."""
+    from pg_diagrammer.projects.store import DiagramStore
+
+    portable = tmp_path / "junto-al-exe" / "diagrams"
+    portable.mkdir(parents=True)
+    monkeypatch.setenv("PG_DIAGRAMMER_DIAGRAMS_DIR", str(portable))
+
+    data_dir = tmp_path / "data"
+    store = DiagramStore(data_dir)
+    assert store.dir == portable
+
+    # La eleccion explicita del usuario pisa el modo portable.
+    elegido = tmp_path / "mis-diagramas"
+    store.set_dir(elegido)
+    store2 = DiagramStore(data_dir)
+    assert store2.dir == elegido

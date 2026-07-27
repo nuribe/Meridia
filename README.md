@@ -40,7 +40,25 @@ No necesitas instalar PostgreSQL ni SQL Server: Meridia se conecta a **cualquier
 
 ---
 
-## 🚀 Instalación paso a paso
+## 📦 Ejecutable standalone (para usuarios finales)
+
+¿Solo quieres **usar** Meridia sin instalar Python, Node ni Rust? Genera (o descarga de un release) el ejecutable autocontenido:
+
+```powershell
+# En la máquina de desarrollo (una sola vez):
+powershell -ExecutionPolicy Bypass -File scripts\build-standalone.ps1
+```
+
+Produce dos artefactos en Windows:
+
+- **Instalador** (`Meridia_x.y.z_x64-setup.exe`): instala la app con acceso directo; descarga WebView2 solo si falta.
+- **ZIP portable** (`Meridia-portable-win64.zip`): descomprimir y ejecutar `Meridia.exe`, sin instalación. Requiere WebView2 (ya viene en Windows 10/11). El ZIP incluye una carpeta `diagrams` con tu biblioteca actual (o la que indiques con `-DiagramsDir`): la app la usa como biblioteca inicial, y los diagramas se abren contra la conexión del usuario (funcionan en otra máquina si su base tiene esas tablas).
+
+El motor Python viaja empaquetado dentro (PyInstaller) — el usuario final no necesita nada más. También hay un workflow de CI (`.github/workflows/standalone.yml`) que genera los ejecutables de Windows, macOS y Linux al publicar un tag `v*` o manualmente desde GitHub Actions.
+
+---
+
+## 🚀 Instalación paso a paso (para desarrollar)
 
 Abre una terminal en la carpeta del proyecto y sigue estos pasos.
 

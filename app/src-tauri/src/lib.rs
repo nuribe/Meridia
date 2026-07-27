@@ -8,8 +8,10 @@
 //!
 //! Modo dev: ejecuta `python -m pg_diagrammer` desde ../sidecar
 //!   (intérprete configurable con PG_DIAGRAMMER_PYTHON).
-//! Modo prod: ejecuta el binario indicado en PG_DIAGRAMMER_SIDECAR_BIN
-//!   (empaquetado por CI con PyInstaller como recurso de la app).
+//! Modo prod (standalone): busca `pg-diagrammer-sidecar(.exe)` junto al
+//!   ejecutable de la app (colocado ahí por `externalBin` de Tauri, ver
+//!   tauri.standalone.json y scripts/build-standalone.ps1). La variable
+//!   PG_DIAGRAMMER_SIDECAR_BIN sigue teniendo prioridad si está definida.
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -39,9 +41,25 @@ fn generate_token() -> String {
         .collect()
 }
 
+/// Sidecar empaquetado (PyInstaller) junto al ejecutable de la app.
+fn bundled_sidecar() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) {
+        "pg-diagrammer-sidecar.exe"
+    } else {
+        "pg-diagrammer-sidecar"
+    };
+    let candidate = dir.join(name);
+    candidate.exists().then_some(candidate)
+}
+
 fn spawn_sidecar(token: &str) -> Result<(Child, u16), String> {
     let mut cmd = if let Ok(bin) = std::env::var("PG_DIAGRAMMER_SIDECAR_BIN") {
         Command::new(bin)
+    } else if let Some(bundled) = bundled_sidecar() {
+        // Standalone: el binario PyInstaller viaja junto a la app.
+        Command::new(bundled)
     } else {
         // Desarrollo: python -m pg_diagrammer con cwd en ../sidecar
         let python = std::env::var("PG_DIAGRAMMER_PYTHON").unwrap_or_else(|_| "python".into());
@@ -52,6 +70,14 @@ fn spawn_sidecar(token: &str) -> Result<(Child, u16), String> {
         c.env("PYTHONPATH", "src");
         c
     };
+
+    // En Windows la app es GUI: sin esto, el proceso hijo de consola
+    // abriría una ventana de terminal visible (CREATE_NO_WINDOW).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
 
     let mut child = cmd
         .env("PG_DIAGRAMMER_TOKEN", token)
