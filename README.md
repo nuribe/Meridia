@@ -54,7 +54,9 @@ Produce dos artefactos en Windows:
 - **Instalador** (`Meridia_x.y.z_x64-setup.exe`): instala la app con acceso directo; descarga WebView2 solo si falta.
 - **ZIP portable** (`Meridia-portable-win64.zip`): descomprimir y ejecutar `Meridia.exe`, sin instalación. Requiere WebView2 (ya viene en Windows 10/11). El ZIP incluye una carpeta `diagrams` con tu biblioteca actual (o la que indiques con `-DiagramsDir`): la app la usa como biblioteca inicial, y los diagramas se abren contra la conexión del usuario (funcionan en otra máquina si su base tiene esas tablas).
 
-El motor Python viaja empaquetado dentro (PyInstaller) — el usuario final no necesita nada más. También hay un workflow de CI (`.github/workflows/standalone.yml`) que genera los ejecutables de Windows, macOS y Linux al publicar un tag `v*` o manualmente desde GitHub Actions.
+El motor Python viaja empaquetado dentro (PyInstaller) — el usuario final no necesita nada más.
+
+**Descarga directa:** cada commit en `main` dispara el workflow `.github/workflows/standalone.yml`, que compila el ejecutable de Windows y lo publica en el pre-release **`latest`** de la página de *Releases* (instalador + ZIP portable, se reemplazan en cada commit). Cada build incluye un **`NOVEDADES.md`** con las mejoras desde la última versión etiquetada: es el cuerpo del release, un archivo descargable y también viaja dentro del ZIP portable. Al publicar un tag `v*` se generan además los ejecutables de macOS y Linux en un release versionado con sus propias notas.
 
 ---
 
