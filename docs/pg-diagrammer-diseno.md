@@ -56,6 +56,7 @@ El render de export SVG/PNG se hace en el frontend (serialización del canvas), 
 - SSL/TLS opcional por conexión (`sslmode` require/verify-full, CA custom en PostgreSQL).
 - Rol de BD recomendado: solo lectura; la app jamás ejecuta DDL/DML, solo `SELECT` sobre catálogos. En PostgreSQL las consultas del usuario corren en transacción READ ONLY; en SQL Server (sin transacciones de solo lectura) se valida que la sentencia empiece por `SELECT`/`WITH`.
 - SQL Server con `auth_method: windows`: SSPI (usuario de la sesión, sin contraseña, solo Windows) o NTLM (`DOMINIO\usuario` + contraseña, cualquier SO).
+- **Decodificación tolerante de columnas de texto (no quitar).** `connections/mssql.py` envuelve `Collation.get_codec` de python-tds para que la decodificación con la codepage del collation nunca lance `UnicodeDecodeError`. Es habitual encontrar bytes no definidos en la codepage (p. ej. 0x81 en cp1252, texto UTF-8 guardado en columnas `varchar`); sin esto, UNA fila corrupta rompe la consulta entera. Siendo un visor de solo lectura, se prefiere mostrar la fila con el carácter sustituido a perder el resultado completo (para datos válidos el texto es idéntico). Hay que cubrir los **dos** caminos de lectura del driver: `read_str` para `char`/`varchar(n)` y el **decodificador incremental** (`iterdecode`) para `varchar(max)`/`text` — parchear solo el primero deja el fallo vivo en las columnas grandes.
 
 ---
 
@@ -106,6 +107,8 @@ Base: `http://127.0.0.1:{port}/api/v1`, todas con `X-Session-Token`.
 | `POST /db/.../introspect` | Carga en bloque de schemas seleccionados → snapshot cacheado con `snapshot_id` |
 | `GET /db/.../relationships?tables=[...]` | FKs entre un conjunto de tablas (para pintar aristas al soltar en el lienzo) |
 | `POST /db/.../refresh` | Invalida cache y re-introspecta (diff opcional contra snapshot previo) |
+| `POST /db/.../query` | Ejecuta una consulta de SOLO LECTURA (PostgreSQL: transacción READ ONLY; SQL Server: validación SELECT/WITH) con límite de filas |
+| `POST /db/.../query/explain` | Plan de ejecución de la consulta: `mode=estimated` (no la ejecuta — `EXPLAIN` / `SET SHOWPLAN_ALL ON`) o `mode=actual` (`EXPLAIN ANALYZE` / `SET STATISTICS PROFILE ON`). Ambos motores devuelven el MISMO árbol normalizado (`domain/explain.py`) |
 | `GET/POST/PUT /projects`, `/projects/{id}/diagrams` | CRUD de proyectos y diagramas (`.pgdiag`) |
 | `POST /export` | `{diagram_id, format: svg\|png\|json\|mermaid\|dbml}` → archivo |
 

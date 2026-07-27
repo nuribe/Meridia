@@ -136,6 +136,31 @@ export interface TableDetail {
   indexes: IndexInfo[];
 }
 
+/** Plan estimado (no ejecuta la consulta) o real (la ejecuta y mide). */
+export type ExplainMode = "estimated" | "actual";
+
+/** Nodo del árbol del plan, ya normalizado por el sidecar para ambos motores. */
+export interface ExplainNode {
+  depth: number;
+  /** "operator" = nodo del árbol; "summary" = línea final (Planning/Execution Time). */
+  kind: "operator" | "summary";
+  op: string;
+  text: string;
+  estimate_rows: number | null;
+  cost: number | null;
+  actual_rows: number | null;
+  actual_time: number | null;
+  detail: string[];
+}
+
+export interface ExplainPlan {
+  engine: DbEngine;
+  mode: ExplainMode;
+  nodes: ExplainNode[];
+  plan_text: string;
+  elapsed_ms: number;
+}
+
 let cached: SidecarInfo | null = null;
 
 function isTauri(): boolean {
@@ -170,15 +195,37 @@ export async function sidecarInfo(): Promise<SidecarInfo> {
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { port, token } = await sidecarInfo();
-  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Session-Token": token,
-      ...init.headers,
-    },
-  });
-  const body = await res.json();
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${port}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Session-Token": token,
+        ...init.headers,
+      },
+    });
+  } catch (e) {
+    // fetch solo falla así cuando no hay respuesta HTTP: el sidecar no está
+    // escuchando o murió a mitad de la petición. "Failed to fetch" a secas no
+    // dice nada, así que se traduce al envelope de siempre.
+    throw {
+      code: "SIDECAR_UNREACHABLE",
+      message: `No se pudo contactar con el motor local (${String(e)}).`,
+      hint: "El proceso del sidecar no respondió. Reinicia la aplicación; si acabas de ejecutar una consulta muy grande, acótala con TOP/LIMIT o WHERE.",
+      retriable: true,
+    } as ApiError;
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw {
+      code: res.ok ? "BAD_RESPONSE" : "HTTP_ERROR",
+      message: `Respuesta inesperada del motor local (HTTP ${res.status}).`,
+      retriable: false,
+    } as ApiError;
+  }
   if (!res.ok && path.startsWith("/api/")) {
     throw body as ApiError;
   }
@@ -299,6 +346,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ sql, max_rows: maxRows }),
     }),
+
+  /** Plan de ejecución de una consulta: "estimated" no la ejecuta, "actual" sí. */
+  explainQuery: (
+    id: string,
+    dbname: string,
+    sql: string,
+    mode: ExplainMode = "estimated"
+  ) =>
+    apiFetch<ExplainPlan>(
+      `/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/query/explain`,
+      { method: "POST", body: JSON.stringify({ sql, mode }) }
+    ),
 
   routineDefinition: (id: string, dbname: string, schema: string, routine: string, args: string) =>
     apiFetch<{ definition: string }>(

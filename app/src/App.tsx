@@ -73,6 +73,7 @@ export default function App() {
           <div style={{ display: view.mode === "explorer" ? "block" : "none", height: "100vh" }}>
             <Explorer
               profileId={view.profile.id}
+              engine={view.profile.engine ?? "postgresql"}
               dbname={view.dbname}
               onBack={() => setView({ name: "databases", profile: view.profile })}
               onOpenDiagram={() => setView({ ...view, mode: "diagram" })}

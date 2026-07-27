@@ -14,10 +14,11 @@ Si alguna vez te preguntaste *"¿cómo está organizada esta base de datos?"* o 
 
 - **Conectarte a cualquier PostgreSQL o SQL Server** — local o remoto — con solo llenar un formulario (motor, host, puerto, usuario, contraseña y base de datos). Con SQL Server puedes usar login SQL o **autenticación integrada de Windows** (deja usuario y contraseña vacíos para usar tu sesión actual, o `DOMINIO\usuario` + contraseña para NTLM). Tu contraseña se guarda de forma segura en el llavero de tu sistema operativo, nunca en texto plano.
 - **Explorar tu base de datos** como un árbol: esquemas, tablas, vistas, columnas, llaves primarias (🔑) y foráneas (→), índices y comentarios. Con buscador y filtro por tipo.
-- **Ver el detalle de cada tabla**: sus columnas, qué otras tablas la referencian, y qué funciones o procedimientos la usan. Puedes navegar de una tabla a otra siguiendo sus relaciones.
+- **Ver el detalle de cada tabla**: sus columnas, qué otras tablas la referencian, y qué vistas, funciones o procedimientos la usan (con el esquema de cada objeto a la vista). Puedes navegar de una tabla a otra siguiendo sus relaciones, y copiar de un clic la definición SQL de cualquier vista.
 - **Crear diagramas ER** arrastrando tablas al lienzo (o con doble clic). Meridia conecta las tablas automáticamente y marca la cardinalidad de cada relación, incluso las relaciones de una tabla consigo misma.
 - **Personalizar el diagrama**: colapsar tablas, cambiar el color de su cabecera, ocultar columnas, añadir notas adhesivas y ordenar todo con un clic (auto-layout).
-- **Escribir consultas SQL** de solo lectura, con un editor que colorea la sintaxis y te autocompleta nombres de tablas y columnas (pulsa **TAB** para aceptar la sugerencia).
+- **Escribir consultas SQL** de solo lectura, con un editor que colorea la sintaxis y te autocompleta nombres de tablas y columnas (pulsa **TAB** para aceptar la sugerencia). Los resultados traen un **filtro por columna** para acotar lo que ves sin volver a lanzar la consulta.
+- **Entender por qué una consulta va lenta** con el [plan de ejecución dibujado como un diagrama](#-el-plan-de-ejecución-de-un-vistazo).
 - **Guardar y compartir**: exporta tus diagramas a **PNG**, **SVG**, **Mermaid** o **DBML**, o guárdalos como archivo `.pgdiag` que luego puedes abrir incluso sin conexión a la base de datos.
 - **A tu gusto**: 4 temas visuales, zoom de toda la interfaz y ventana redimensionable.
 
@@ -109,12 +110,39 @@ Guarda y ¡listo! Ya puedes explorar y diagramar.
 
 ---
 
+## 🐢 El plan de ejecución, de un vistazo
+
+Cuando una consulta tarda más de lo que debería, el motor puede contarte *cómo* la resolvió. Meridia te lo enseña como un **diagrama de proceso** en la pestaña **⚙ Plan de ejecución** del editor SQL, en vez de como el volcado de texto que normalmente hay que descifrar.
+
+**Cómo se lee:** los datos entran por la izquierda —los operadores que leen las tablas— y fluyen hacia la derecha hasta el resultado. Cada columna es un paso: lo que ves en una columna puede ocurrir en ese momento del flujo.
+
+**Qué mirar primero:**
+
+- El **grosor de cada flecha** es el volumen de filas que circula por ella. Una flecha gruesa entrando a un operador caro suele ser el problema.
+- El **color** (verde → ámbar → rojo) señala el coste *propio* de cada operador, no el acumulado. Los motores reportan el coste del subárbol completo, con lo que la raíz siempre parece la más cara; Meridia le resta el de sus hijos para que destaque el cuello de botella real. El más caro lleva la etiqueta **más caro**.
+- Cada nodo muestra sus **filas estimadas** y, en modo real, las **filas reales**. Una diferencia grande entre ambas explica muchas malas decisiones del optimizador.
+
+**Estimado o real:**
+
+| | Qué hace | Cuándo usarlo |
+|---|---|---|
+| **Estimado** | El motor compila la consulta pero **no la ejecuta**. Instantáneo. | Por defecto, y siempre que solo quieras ver la estrategia. |
+| **Real** | **Ejecuta la consulta completa** y mide filas y tiempos de verdad. | Cuando necesites comparar lo estimado con lo que pasó. Meridia te lo pide con un botón aparte, nunca lo lanza solo. |
+
+Con **▤ Tabla** cambias a la vista de operadores con los números exactos, y con **⭳ PNG** exportas el diagrama **completo** —no solo lo que se ve en pantalla— para pegarlo en un ticket o en documentación.
+
+> ℹ️ Por debajo son `EXPLAIN` / `EXPLAIN (ANALYZE, BUFFERS)` en PostgreSQL y `SET SHOWPLAN_ALL` / `SET STATISTICS PROFILE` en SQL Server. Meridia normaliza ambos al mismo diagrama, así que se leen igual.
+
+---
+
 ## 🛟 Solución de problemas comunes
 
 - **El arrastrar-y-soltar no funciona en la app de escritorio (Windows).** Ya viene resuelto (`dragDropEnabled: false` en la config). Si compilaste una versión anterior, vuelve a ejecutar `npm run tauri dev` para recompilar. Alternativa siempre válida: **doble clic** en la tabla para agregarla.
 - **La lista de bases de datos aparece vacía.** Suele pasar detrás de un *pooler* (pgbouncer). Usa el nombre exacto de tu base en el formulario, o el campo "Conectar por nombre".
 - **SQL Server no acepta la conexión.** Verifica que el protocolo **TCP/IP esté habilitado** (SQL Server Configuration Manager) y que el puerto (1433 por defecto) sea accesible; con instancias con nombre puede variar. Con Auth: Windows fuera de un dominio, usa `DOMINIO\usuario` + contraseña.
 - **No recuerda mi contraseña al reiniciar.** Si tu sistema no tiene llavero disponible, la contraseña solo dura la sesión; te la volverá a pedir (nunca se guarda en texto plano).
+- **El plan real dice que la consulta devuelve demasiadas filas.** Es a propósito: para medir el plan real hay que ejecutar la consulta entera, y traerse millones de filas solo para tirarlas no compensa. Acota con `TOP`/`LIMIT` o `WHERE`, o quédate con el plan estimado.
+- **Veo caracteres `�` en algunos textos.** Esa columna tiene bytes que no existen en la codificación de su *collation* (típico de texto UTF-8 guardado en un `varchar` de SQL Server). Meridia sustituye solo el carácter afectado en vez de fallar la consulta entera; el resto de la fila es correcto.
 
 ---
 
@@ -165,6 +193,8 @@ Meridia ya cubre lo esencial, y hay mucho espacio para crecer. Si quieres aprend
 - **Guardar "vistas" de diagrama** (grupos de tablas favoritas) para reabrirlas rápido.
 - **Comparar dos snapshots** y resaltar los cambios de estructura entre fechas.
 - **Modo solo lectura de datos más rico**: paginación infinita, exportar el resultado de una consulta a CSV.
+- **Comparar dos planes de ejecución** (antes y después de crear un índice) resaltando qué operadores cambiaron.
+- **Sugerencias sobre el plan**: detectar automáticamente estimaciones muy desviadas o scans sobre tablas grandes y proponer qué mirar.
 - **Plantillas de color por esquema** para distinguir módulos de un vistazo.
 - **Atajos de teclado** para las acciones más usadas del lienzo.
 - **Traducir la interfaz** a otros idiomas.
@@ -188,6 +218,6 @@ Meridia atravesó varias fases y hoy es funcional de punta a punta:
 
 - **Base:** conexión a PostgreSQL y SQL Server (login SQL o Windows integrada), introspección de `pg_catalog` / `sys.*`, explorador con búsqueda y filtros, perfiles con contraseña en el llavero.
 - **Diagramas:** lienzo con arrastrar-y-soltar, relaciones automáticas con cardinalidad (incluidas las reflexivas), auto-layout, personalización de nodos, notas y buscador de nodos.
-- **Consultas:** editor SQL de solo lectura con resaltado y autocompletado.
-- **Compartir:** guardar/abrir `.pgdiag` (autocontenido y visible sin conexión), export PNG / SVG / Mermaid / DBML, directorio de diagramas configurable.
+- **Consultas:** editor SQL de solo lectura con resaltado y autocompletado (adaptado al dialecto de cada motor), filtros por columna en los resultados y plan de ejecución —estimado o real— dibujado como diagrama de proceso.
+- **Compartir:** guardar/abrir `.pgdiag` (autocontenido y visible sin conexión), export PNG / SVG / Mermaid / DBML, PNG del plan de ejecución, directorio de diagramas configurable.
 - **Comodidad:** 4 temas, zoom de la interfaz y ventana redimensionable.

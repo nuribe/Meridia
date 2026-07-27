@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   api,
   type ApiError,
+  type DbEngine,
   type IntrospectSummary,
   type RelationshipInfo,
   type RoutineInfo,
@@ -16,7 +17,7 @@ import {
 import ObjectTree, { KIND_ICON, KIND_LABEL } from "./ObjectTree";
 import ModeSwitch from "./ModeSwitch";
 import ThemeMenu from "./ThemeMenu";
-import QueryTab from "./QueryTab";
+import QueryTab, { copyText } from "./QueryTab";
 import { SetBuilderSessionContext, type BuilderSession } from "./builderBridge";
 import { currentTheme, THEMES } from "./theme";
 
@@ -57,12 +58,14 @@ type Tab = DetailTab | QueryTabState;
 
 interface Props {
   profileId: string;
+  /** Motor del perfil: cambia el dialecto SQL del editor y el plan de ejecución. */
+  engine: DbEngine;
   dbname: string;
   onBack: () => void;
   onOpenDiagram: () => void;
 }
 
-export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: Props) {
+export default function Explorer({ profileId, engine, dbname, onBack, onOpenDiagram }: Props) {
   const [summary, setSummary] = useState<IntrospectSummary | null>(null);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -368,6 +371,7 @@ export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: P
                 >
                   <QueryTab
                     profileId={profileId}
+                    engine={engine}
                     dbname={dbname}
                     summary={summary}
                     loadColumns={loadColumns}
@@ -452,7 +456,18 @@ export default function Explorer({ profileId, dbname, onBack, onOpenDiagram }: P
 }
 
 /** Cabecera destacada de sección del detalle: icono + título + contador. */
-function SectionHeader({ icon, title, count }: { icon: string; title: string; count?: number }) {
+function SectionHeader({
+  icon,
+  title,
+  count,
+  actions,
+}: {
+  icon: string;
+  title: string;
+  count?: number;
+  /** Controles alineados a la derecha (p. ej. el botón de copiar). */
+  actions?: React.ReactNode;
+}) {
   return (
     <div
       className="card-header py-2 d-flex align-items-center gap-2 text-white"
@@ -465,7 +480,35 @@ function SectionHeader({ icon, title, count }: { icon: string; title: string; co
       {count !== undefined && (
         <span className="badge rounded-pill text-bg-light text-dark">{count}</span>
       )}
+      {actions && <span className="ms-auto d-flex align-items-center gap-2">{actions}</span>}
     </div>
+  );
+}
+
+/** Botón de copiar al portapapeles con confirmación temporal. */
+function CopyButton({
+  text,
+  title = "Copiar al portapapeles",
+  className = "btn btn-sm btn-light py-0 px-2",
+}: {
+  text: string;
+  title?: string;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className={className}
+      title={title}
+      onClick={() => {
+        void copyText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+    >
+      {copied ? "✓ Copiado" : "⧉ Copiar"}
+    </button>
   );
 }
 
@@ -592,7 +635,16 @@ function TableDetailView({
 
       {(table.kind === "view" || table.kind === "matview") && table.definition && (
         <div className="card shadow-sm">
-          <SectionHeader icon="⌨" title="Definición SQL" />
+          <SectionHeader
+            icon="⌨"
+            title="Definición SQL"
+            actions={
+              <CopyButton
+                text={table.definition}
+                title="Copiar la definición SQL de la vista"
+              />
+            }
+          />
           <pre
             className="mb-0"
             style={{
@@ -672,15 +724,21 @@ function TableDetailView({
               const [sc, ...rest] = v.split(".");
               const vn = rest.join(".");
               return (
-                <li key={v} className="list-group-item py-2">
-                  <span className="me-1">◉</span>
+                <li key={v} className="list-group-item py-2 d-flex align-items-center gap-2">
+                  <span>◉</span>
+                  <span
+                    className="badge text-bg-light border font-monospace fw-normal"
+                    title="Esquema al que pertenece la vista"
+                  >
+                    {sc}
+                  </span>
                   <a
                     className="link-primary fw-semibold"
                     style={{ cursor: "pointer" }}
                     onClick={() => onNavigate(sc, vn)}
                     title={`Abrir detalle de ${v}`}
                   >
-                    {v}
+                    {vn}
                   </a>
                 </li>
               );
@@ -697,6 +755,7 @@ function TableDetailView({
               <thead className="table-light">
                 <tr>
                   <th style={{ width: 36 }}></th>
+                  <th style={{ width: 120 }}>Esquema</th>
                   <th>Nombre</th>
                   <th>Parámetros</th>
                   <th>Tipo</th>
@@ -711,8 +770,18 @@ function TableDetailView({
                     <tr key={`${r.schema_name}.${r.name}(${r.args})`}>
                       <td className="text-center fs-6">{r.kind === "procedure" ? "⚙" : "ƒ"}</td>
                       <td>
+                        <span
+                          className="badge text-bg-light border font-monospace fw-normal"
+                          title="Esquema al que pertenece la rutina"
+                        >
+                          {r.schema_name}
+                        </span>
+                      </td>
+                      <td>
                         <div className="fw-semibold">{r.name}</div>
-                        <small className="text-body-secondary">{r.schema_name}</small>
+                        <small className="text-body-secondary font-monospace">
+                          {r.schema_name}.{r.name}
+                        </small>
                       </td>
                       <td>
                         {params.length === 0 ? (

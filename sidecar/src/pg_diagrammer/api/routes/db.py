@@ -18,6 +18,7 @@ from pg_diagrammer.connections import manager
 from pg_diagrammer.connections.profiles import PasswordUnavailable as _PU  # noqa: F401
 from pg_diagrammer.connections.profiles import PasswordUnavailable
 from pg_diagrammer.domain.models import Engine, ObjectSummary, QuerySpec, Snapshot, TableKind
+from pg_diagrammer.domain import explain as explain_plan
 from pg_diagrammer.domain import query_builder
 from pg_diagrammer.errors import ApiError, DB_EXCEPTIONS, classify_db_error, classify_pg_error  # noqa: F401
 from pg_diagrammer.export.generators import to_dbml, to_mermaid
@@ -302,18 +303,31 @@ def routine_definition(
         return _error(400, classify_db_error(profile.engine, exc))
 
 
+# Longitud máxima de una celda en las respuestas de datos. Las cuadrículas del
+# frontend recortan visualmente de todos modos, y sin este tope una tabla de
+# bitácora con payloads grandes puede generar cientos de MB de JSON por página
+# (y agotar la memoria del sidecar antes de responder).
+MAX_CELL_CHARS = 4000
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= MAX_CELL_CHARS else text[:MAX_CELL_CHARS] + "… (truncado)"
+
+
 def _jsonable(v):
-    """Convierte un valor de PostgreSQL a algo serializable y legible."""
-    if v is None or isinstance(v, (bool, int, str)):
+    """Convierte un valor de la BD a algo serializable, legible y acotado."""
+    if v is None or isinstance(v, (bool, int)):
         return v
+    if isinstance(v, str):
+        return _clip(v)
     if isinstance(v, float):
         return str(v) if (math.isnan(v) or math.isinf(v)) else v
     if isinstance(v, (bytes, memoryview)):
         h = bytes(v).hex()
         return f"\\x{h[:120]}{'…' if len(h) > 120 else ''}"
     if isinstance(v, (dict, list)):
-        return json.dumps(v, ensure_ascii=False, default=str)
-    return str(v)
+        return _clip(json.dumps(v, ensure_ascii=False, default=str))
+    return _clip(str(v))
 
 
 @router.get("/profiles/{profile_id}/db/{dbname}/tables/{schema}/{table}/data")
@@ -434,6 +448,11 @@ def table_data(
         return password_missing_error(profile_id)
     except DB_EXCEPTIONS as exc:
         return _error(400, classify_db_error(profile.engine, exc))
+    except Exception as exc:  # red de seguridad: nunca dejar caer la conexión HTTP
+        return _error(500, ApiError(
+            code="UNEXPECTED",
+            message=f"Error inesperado al leer los datos: {exc}",
+        ))
 
 
 class QueryRequest(BaseModel):
@@ -509,6 +528,164 @@ def run_query(profile_id: str, dbname: str, body: QueryRequest, request: Request
                 hint = "Solo se permiten consultas de lectura (SELECT, WITH, SHOW…)."
             return _error(400, ApiError(code="SQL_ERROR", message=msg, hint=hint))
         return _error(400, err)
+    except MemoryError:
+        # Un SELECT sobre una tabla enorme puede agotar la memoria del sidecar
+        # antes de recortar a max_rows: se responde en vez de morir.
+        return _error(400, ApiError(
+            code="RESULT_TOO_LARGE",
+            message="El resultado no cabe en memoria.",
+            hint="Acota la consulta con TOP/LIMIT o WHERE antes de ejecutarla.",
+        ))
+    except Exception as exc:  # red de seguridad: nunca dejar caer la conexión HTTP
+        return _error(500, ApiError(
+            code="UNEXPECTED",
+            message=f"Error inesperado al ejecutar la consulta: {exc}",
+        ))
+
+
+class ExplainRequest(BaseModel):
+    sql: str
+    # "estimated" → no ejecuta la consulta; "actual" → la ejecuta y mide.
+    mode: str = "estimated"
+    timeout_ms: int = 15000
+
+
+@router.post("/profiles/{profile_id}/db/{dbname}/query/explain")
+def explain_query(profile_id: str, dbname: str, body: ExplainRequest, request: Request):
+    """Plan de ejecución de una consulta, estimado o real.
+
+    PostgreSQL: ``EXPLAIN`` (estimado) / ``EXPLAIN (ANALYZE, BUFFERS)`` (real),
+    siempre dentro de una transacción READ ONLY.
+    SQL Server: ``SET SHOWPLAN_ALL ON`` (estimado: compila pero no ejecuta) /
+    ``SET STATISTICS PROFILE ON`` (real). En ambos motores se aplican las
+    mismas restricciones de solo lectura que en el editor de consultas.
+    """
+    store = request.app.state.profiles
+    profile = store.get(profile_id)
+    if profile is None:
+        return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
+    sql_text = body.sql.strip().rstrip(";")
+    if not sql_text:
+        return _error(422, ApiError(code="VALIDATION", message="Consulta vacía."))
+    mode = body.mode if body.mode in ("estimated", "actual") else "estimated"
+    timeout = max(1000, min(body.timeout_ms, 60000))
+    is_mssql = profile.engine == Engine.sqlserver
+    if is_mssql and _first_keyword(sql_text) not in ("SELECT", "WITH"):
+        return _error(400, ApiError(
+            code="SQL_ERROR",
+            message="Sentencia no permitida en el editor.",
+            hint="Solo se permiten consultas de lectura (SELECT, WITH…).",
+        ))
+    try:
+        import time
+        t0 = time.perf_counter()
+        with manager.open_profile_connection(
+            store, profile, dbname, query_timeout_ms=timeout if is_mssql else 0
+        ) as conn:
+            if is_mssql:
+                nodes = _mssql_plan(conn, sql_text, mode)
+            else:
+                conn.read_only = True
+                nodes = _postgres_plan(conn, sql_text, mode, timeout)
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        return {
+            "ok": True,
+            "engine": "sqlserver" if is_mssql else "postgresql",
+            "mode": mode,
+            "nodes": nodes,
+            "plan_text": explain_plan.nodes_to_text(nodes),
+            "elapsed_ms": elapsed,
+        }
+    except PasswordUnavailable:
+        return password_missing_error(profile_id)
+    except PlanTooLarge as exc:
+        return _error(400, ApiError(
+            code="PLAN_TOO_LARGE",
+            message=(
+                "La consulta devuelve demasiadas filas para medir el plan real "
+                f"(más de {exc.args[0]:,} filas)."
+            ),
+            hint=(
+                "El plan real obliga a ejecutar la consulta entera. Usa el plan "
+                "estimado, o acota la consulta con TOP / WHERE antes de medirla."
+            ),
+        ))
+    except DB_EXCEPTIONS as exc:
+        err = classify_db_error(profile.engine, exc)
+        if isinstance(exc, (psycopg.Error, pytds.Error)) and err.code == "UNEXPECTED":
+            return _error(400, ApiError(code="SQL_ERROR", message=str(exc).strip()))
+        return _error(400, err)
+    except Exception as exc:  # red de seguridad: nunca dejar caer la conexión HTTP
+        return _error(500, ApiError(
+            code="UNEXPECTED",
+            message=f"Error inesperado al calcular el plan: {exc}",
+            hint="Reintenta con el plan estimado; si persiste, revisa el log del sidecar.",
+        ))
+
+
+def _postgres_plan(conn, sql_text: str, mode: str, timeout: int) -> list[dict]:
+    options = "ANALYZE, BUFFERS, COSTS, TIMING, FORMAT TEXT" if mode == "actual" else "COSTS, FORMAT TEXT"
+    with conn.cursor() as cur:
+        cur.execute(f"SET statement_timeout = {int(timeout)}")
+        cur.execute(f"EXPLAIN ({options}) {sql_text}")
+        lines = [r[0] for r in cur.fetchall()]
+    return explain_plan.parse_postgres_plan(lines)
+
+
+# Con STATISTICS PROFILE el servidor devuelve TODAS las filas de la consulta
+# antes del plan. No se materializan (se leen y descartan por lotes), pero sí
+# hay que acotar cuánto se lee del servidor: por encima de este tope se aborta
+# y se sugiere el plan estimado.
+MSSQL_PLAN_DISCARD_CHUNK = 1000
+MSSQL_PLAN_MAX_DISCARDED_ROWS = 200_000
+# Tope de nodos del plan (los planes patológicos pueden tener miles).
+MSSQL_PLAN_MAX_NODES = 5_000
+
+
+class PlanTooLarge(Exception):
+    """El conjunto de resultados de la consulta es demasiado grande para el plan real."""
+
+
+def _mssql_plan(conn, sql_text: str, mode: str) -> list[dict]:
+    """Recoge el rowset del plan tras ejecutar la consulta con SET ... ON.
+
+    Con SHOWPLAN_ALL la sentencia se compila pero NO se ejecuta: el único
+    rowset es el plan. Con STATISTICS PROFILE la consulta sí se ejecuta y el
+    plan llega DESPUÉS de sus filas, así que hay que recorrer los rowsets.
+
+    Dos reglas que no se pueden relajar:
+    - Las filas de datos jamás se materializan enteras (`fetchall` sobre una
+      tabla grande revienta la memoria del sidecar); se leen por lotes y se
+      descartan, con un tope duro de filas.
+    - No se envía ninguna sentencia más por esta conexión mientras queden
+      resultados pendientes: hacerlo desincroniza el protocolo TDS y produce
+      un "Invalid TDS marker". La conexión es efímera y se cierra al salir,
+      así que no hace falta un `SET ... OFF` de limpieza.
+    """
+    setting = "STATISTICS PROFILE" if mode == "actual" else "SHOWPLAN_ALL"
+    columns: list[str] = []
+    rows: list[tuple] = []
+    with conn.cursor() as cur:
+        cur.execute(f"SET {setting} ON")
+        cur.execute(sql_text)
+        discarded = 0
+        while True:
+            names = [d[0] for d in cur.description or []]
+            if names and any(n.lower() == "stmttext" for n in names):
+                columns = names
+                rows = list(cur.fetchmany(MSSQL_PLAN_MAX_NODES))
+            elif names:
+                # Filas de la consulta: se leen por lotes y se tiran.
+                while True:
+                    chunk = cur.fetchmany(MSSQL_PLAN_DISCARD_CHUNK)
+                    if not chunk:
+                        break
+                    discarded += len(chunk)
+                    if discarded > MSSQL_PLAN_MAX_DISCARDED_ROWS:
+                        raise PlanTooLarge(discarded)
+            if not cur.nextset():
+                break
+    return explain_plan.parse_mssql_plan(columns, rows)
 
 
 class RelationshipsRequest(BaseModel):
