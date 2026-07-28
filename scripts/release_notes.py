@@ -195,6 +195,31 @@ def build_notes(version: str) -> str:
     )
     add("")
 
+    # --- Qué descargar -----------------------------------------------------
+    # Lo primero de todo: GitHub añade siempre "Source code (zip)" y
+    # "(tar.gz)" al final de los assets y NO se pueden quitar (no son assets
+    # de verdad, los deriva del tag). Como son los dos últimos de la lista y
+    # se llaman "Source code", un usuario no técnico se los descarga y se
+    # encuentra el repositorio en vez de la aplicación. Al menos, que estas
+    # notas digan sin rodeos qué archivo hay que coger.
+    files = artifacts()
+    installer = next((n for n, _ in files if n.endswith("-setup.exe")), None)
+    portable = next((n for n, _ in files if n.endswith(".zip")), None)
+    add("## ⬇️ Qué descargar")
+    add("")
+    add("| Si quieres… | Descarga |")
+    add("|---|---|")
+    add(f"| **Instalar Meridia** | `{installer or 'Meridia_*_x64-setup.exe'}` |")
+    add(f"| **Usarla sin instalar** | `{portable or 'Meridia-portable-win64.zip'}` |")
+    add("")
+    add(
+        "> ⚠️ **`Source code (zip)` y `Source code (tar.gz)` NO son la "
+        "aplicación.** Los añade GitHub automáticamente a toda release y "
+        "contienen el código fuente del proyecto, no el programa. Ignóralos "
+        "salvo que quieras compilar Meridia tú mismo."
+    )
+    add("")
+
     # --- Qué cambió --------------------------------------------------------
     add("## 🆕 Qué cambia en esta build")
     add("")
@@ -256,7 +281,6 @@ def build_notes(version: str) -> str:
     )
     add("")
 
-    files = artifacts()
     if files:
         add("Archivos publicados en esta build:")
         add("")

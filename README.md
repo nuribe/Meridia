@@ -77,6 +77,7 @@ El número aparece en tres sitios que siempre coinciden: el **título del releas
 
 `scripts/release_notes.py` genera un **`NOVEDADES.md`** que es a la vez el cuerpo del release, un archivo descargable suelto y un archivo dentro del ZIP portable. Incluye:
 
+- **Qué descargar**, con el nombre exacto del instalador y del ZIP portable. GitHub añade a toda release un `Source code (zip)` y un `Source code (tar.gz)` que **no se pueden quitar** (no son *assets* reales: los deriva del tag), así que las notas avisan explícitamente de que ésos son el código fuente y no la aplicación.
 - **Qué cambia**, con el texto completo de cada commit desde la última versión etiquetada — no solo los títulos, porque el *porqué* de un cambio suele estar en el cuerpo.
 - **Qué trae la descarga**: instalador y ZIP portable, qué contiene cada uno, requisitos, y los archivos publicados con su tamaño real.
 - **Qué sabe hacer Meridia**, leído de este mismo README para que no pueda quedarse desactualizado.
