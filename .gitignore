@@ -12,6 +12,8 @@ build/
 # Node
 node_modules/
 app/dist/
+# Temporales que Vite deja al cargar vite.config.ts
+vite.config.ts.timestamp-*.mjs
 
 # Rust / Tauri
 app/src-tauri/target/
