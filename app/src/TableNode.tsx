@@ -2,12 +2,53 @@
  * Nodo del lienzo que representa una tabla/vista con sus columnas.
  * Personalizable: color de cabecera, colapsar, ocultar columnas (modo ✎).
  * PK marcada con llave, columnas FK con flecha.
+ *
+ * Conectores: todo el contorno es zona de conexión (ver handleSlots.ts). Se
+ * renderizan todos los slots, pero solo se ven los que una relación ocupa; así
+ * una tabla con muchas FKs muestra varios puntos separados en vez de un nudo.
+ *
+ * Clic en una columna: pide a DiagramView que trace sus relaciones.
  */
-import { useState } from "react";
-import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
+import { useContext, useMemo, useState } from "react";
+import { Handle, type NodeProps, type Node } from "@xyflow/react";
 import type { TableDetail } from "./api/client";
+import {
+  HandleUsageContext,
+  SIDES,
+  SIDE_POSITION,
+  SLOTS_PER_SIDE,
+  handleId,
+  slotOffset,
+  type HandleRole,
+  type Side,
+} from "./handleSlots";
 
 const MAX_COLS = 14;
+
+/** Todos los anclajes del contorno: 4 lados × N slots × (source + target). */
+const HANDLE_SPECS: { id: string; role: HandleRole; side: Side; slot: number }[] =
+  SIDES.flatMap((side) =>
+    Array.from({ length: SLOTS_PER_SIDE }, (_, slot) => slot).flatMap((slot) =>
+      (["t", "s"] as HandleRole[]).map((role) => ({
+        id: handleId(role, side, slot),
+        role,
+        side,
+        slot,
+      }))
+    )
+  );
+
+/** Contorno sutil que indica que todo el perímetro admite conexiones. */
+function perimeterStyle(color: string): React.CSSProperties {
+  return {
+    position: "absolute",
+    inset: -4,
+    border: `1px solid ${color}`,
+    borderRadius: 11,
+    opacity: 0.16,
+    pointerEvents: "none",
+  };
+}
 
 export const NODE_PALETTE = ["#12305c", "#0e6b5c", "#5b3a8c", "#8a3a3a", "#3a6e2f", "#555555"];
 
@@ -24,9 +65,12 @@ export type TableNodeType = Node<
     custom: NodeCustom;
     highlight?: string[];
     joinHighlight?: string[];
+    /** Columna sobre la que el usuario hizo clic para trazar su relación. */
+    pickedColumn?: string;
     onRemove: (key: string) => void;
     onCustomChange: (key: string, patch: Partial<NodeCustom>) => void;
     onAddRelated: (key: string, direction: "in" | "out" | "both") => void;
+    onColumnClick?: (key: string, column: string) => void;
   },
   "table"
 >;
@@ -40,10 +84,23 @@ const btn: React.CSSProperties = {
 };
 
 export default function TableNode({ data }: NodeProps<TableNodeType>) {
-  const { table: t, custom, highlight, joinHighlight, onRemove, onCustomChange, onAddRelated } = data;
+  const {
+    table: t,
+    custom,
+    highlight,
+    joinHighlight,
+    pickedColumn,
+    onRemove,
+    onCustomChange,
+    onAddRelated,
+    onColumnClick,
+  } = data;
   const highlighted = new Set(highlight ?? []);
   const joinHl = new Set(joinHighlight ?? []);
   const key = `${t.schema_name}.${t.name}`;
+  const usage = useContext(HandleUsageContext);
+  const used = useMemo(() => new Set(usage[key] ?? []), [usage, key]);
+  const anyConnection = used.size > 0;
   const [editCols, setEditCols] = useState(false);
   const [relMenu, setRelMenu] = useState(false);
   const color = custom.color ?? NODE_PALETTE[0];
@@ -51,6 +108,13 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
   const collapsed = custom.collapsed ?? false;
 
   const fkCols = new Set(t.foreign_keys.flatMap((fk) => fk.columns));
+  // FKs que apuntan a la propia tabla: se marcan con ↻ en vez de →, si no la
+  // relación reflexiva pasa desapercibida dentro de la lista de columnas.
+  const selfFkCols = new Set(
+    t.foreign_keys
+      .filter((fk) => fk.ref_schema === t.schema_name && fk.ref_table === t.name)
+      .flatMap((fk) => fk.columns)
+  );
   const display = custom.display ?? "default";
   const base = editCols ? t.columns : t.columns.filter((c) => !hidden.has(c.name));
   const afterKeys =
@@ -79,15 +143,39 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
         boxShadow: "0 2px 6px rgba(0,0,0,.12)",
       }}
     >
-      {/* Handles en los cuatro lados: la arista elige el más cercano automáticamente */}
-      <Handle id="t-left" type="target" position={Position.Left} style={{ background: color, width: 7, height: 7 }} />
-      <Handle id="t-right" type="target" position={Position.Right} style={{ background: color, width: 7, height: 7 }} />
-      <Handle id="t-top" type="target" position={Position.Top} style={{ background: color, width: 7, height: 7 }} />
-      <Handle id="t-bottom" type="target" position={Position.Bottom} style={{ background: color, width: 7, height: 7 }} />
-      <Handle id="s-left" type="source" position={Position.Left} style={{ background: color, width: 7, height: 7 }} />
-      <Handle id="s-right" type="source" position={Position.Right} style={{ background: color, width: 7, height: 7 }} />
-      <Handle id="s-top" type="source" position={Position.Top} style={{ background: color, width: 7, height: 7 }} />
-      <Handle id="s-bottom" type="source" position={Position.Bottom} style={{ background: color, width: 7, height: 7 }} />
+      {/* Contorno sutil: señala que todo el perímetro es zona de conexión. */}
+      {anyConnection && <div style={perimeterStyle(color)} />}
+
+      {/* Anclajes repartidos por todo el contorno. La arista elige el lado más
+          cercano y, dentro de él, un slot propio: así varias relaciones de la
+          misma tabla no se amontonan en un solo punto. Solo son visibles los
+          slots ocupados; el resto queda invisible pero disponible. */}
+      {HANDLE_SPECS.map(({ id, role, side, slot }) => {
+        const on = used.has(id);
+        const along = side === "left" || side === "right"
+          ? { top: slotOffset(slot) }
+          : { left: slotOffset(slot) };
+        return (
+          <Handle
+            key={id}
+            id={id}
+            type={role === "s" ? "source" : "target"}
+            position={SIDE_POSITION[side]}
+            isConnectable={false}
+            style={{
+              ...along,
+              width: on ? 8 : 1,
+              height: on ? 8 : 1,
+              minWidth: on ? 8 : 1,
+              minHeight: on ? 8 : 1,
+              background: on ? color : "transparent",
+              border: on ? "1.5px solid #fff" : "none",
+              opacity: on ? 1 : 0,
+              zIndex: on ? 2 : 0,
+            }}
+          />
+        );
+      })}
       <div
         style={{
           background: color,
@@ -200,9 +288,21 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
           )}
           {visible.map((c) => {
             const isHidden = hidden.has(c.name);
+            const isFk = fkCols.has(c.name);
+            const picked = pickedColumn === c.name;
+            const marked = highlighted.has(c.name) || joinHl.has(c.name);
             return (
               <div
                 key={c.name}
+                title={
+                  editCols
+                    ? undefined
+                    : selfFkCols.has(c.name)
+                      ? "Relación reflexiva (apunta a esta misma tabla). Clic para seguirla."
+                      : isFk || c.is_pk
+                        ? "Clic: seguir la relación de esta columna"
+                        : undefined
+                }
                 onClick={
                   editCols
                     ? (e) => {
@@ -212,27 +312,52 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                           : [...(custom.hidden ?? []), c.name];
                         onCustomChange(key, { hidden: next });
                       }
-                    : undefined
+                    : onColumnClick
+                      ? (e) => {
+                          e.stopPropagation();
+                          onColumnClick(key, c.name);
+                        }
+                      : undefined
                 }
                 style={{
                   display: "flex",
                   gap: 6,
                   padding: "1.5px 10px",
                   alignItems: "baseline",
-                  cursor: editCols ? "pointer" : undefined,
+                  cursor: editCols || onColumnClick ? "pointer" : undefined,
                   opacity: editCols && isHidden ? 0.35 : 1,
                   textDecoration: editCols && isHidden ? "line-through" : undefined,
-                  background: highlighted.has(c.name)
-                    ? "#fde68a"
-                    : joinHl.has(c.name)
-                      ? "#ede9fe"
-                      : undefined,
-                  borderRadius: highlighted.has(c.name) || joinHl.has(c.name) ? 3 : undefined,
-                  fontWeight: highlighted.has(c.name) || joinHl.has(c.name) ? 600 : undefined,
+                  background: picked
+                    ? "#fbbf24"
+                    : highlighted.has(c.name)
+                      ? "#fde68a"
+                      : joinHl.has(c.name)
+                        ? "#ede9fe"
+                        : undefined,
+                  boxShadow: picked ? "inset 0 0 0 1.5px #b45309" : undefined,
+                  borderRadius: picked || marked ? 3 : undefined,
+                  fontWeight: picked || marked ? 600 : undefined,
                 }}
               >
-                <span style={{ width: 14, textAlign: "center" }}>
-                  {editCols ? (isHidden ? "◻" : "◼") : c.is_pk ? "🔑" : fkCols.has(c.name) ? "→" : ""}
+                <span
+                  style={{
+                    width: 14,
+                    textAlign: "center",
+                    color: !editCols && selfFkCols.has(c.name) ? "#7c3aed" : undefined,
+                    fontWeight: !editCols && selfFkCols.has(c.name) ? 700 : undefined,
+                  }}
+                >
+                  {editCols
+                    ? isHidden
+                      ? "◻"
+                      : "◼"
+                    : c.is_pk
+                      ? "🔑"
+                      : selfFkCols.has(c.name)
+                        ? "↻"
+                        : fkCols.has(c.name)
+                          ? "→"
+                          : ""}
                 </span>
                 <span style={{ fontWeight: c.is_pk ? 600 : 400 }}>{c.name}</span>
                 <span style={{ color: "#999", marginLeft: "auto", fontSize: 11 }}>{c.data_type}</span>

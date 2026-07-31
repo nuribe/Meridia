@@ -6,6 +6,10 @@
  *   se recalculan ante cualquier cambio (sin carreras, incluye inter-schema).
  * - Clic en una relación: resalta las columnas implicadas en ambas tablas y
  *   anima el flujo desde la tabla origen (FK) hacia la destino.
+ * - Clic en una COLUMNA: traza todas las relaciones en las que participa,
+ *   marca las tablas destino y ofrece un panel para saltar a ellas.
+ * - Los conectores se reparten por todo el contorno del nodo (handleSlots.ts):
+ *   una tabla con muchas relaciones ya no las concentra en un solo punto.
  * - ⇲ en un nodo añade todas sus tablas relacionadas.
  * - Sticky notes redimensionables y con colores.
  */
@@ -44,6 +48,15 @@ import {
   type TableDetail,
 } from "./api/client";
 import TableNode, { type NodeCustom } from "./TableNode";
+import {
+  CENTER_SLOT,
+  HandleUsageContext,
+  handleId,
+  spreadSlots,
+  type HandleRole,
+  type HandleUsage,
+  type Side,
+} from "./handleSlots";
 import SelfLoopEdge from "./SelfLoopEdge";
 import NoteNode, { NOTE_PALETTE } from "./NoteNode";
 import ObjectTree, { DND_MIME } from "./ObjectTree";
@@ -69,6 +82,13 @@ const FLOW_CSS = `
   0%, 100% { filter: none; }
   30% { filter: drop-shadow(0 0 0 3px #f59e0b) drop-shadow(0 0 10px rgba(245,158,11,.9)); }
 }
+/* Trazado de relación por columna: origen en azul, destinos en ámbar. */
+.react-flow__node.pgdiag-origin {
+  filter: drop-shadow(0 0 5px rgba(37,99,235,.9)) drop-shadow(0 0 11px rgba(37,99,235,.45));
+}
+.react-flow__node.pgdiag-dest {
+  filter: drop-shadow(0 0 5px rgba(245,158,11,.95)) drop-shadow(0 0 12px rgba(245,158,11,.5));
+}
 `;
 
 function errText(e: unknown): string {
@@ -90,6 +110,103 @@ function nodeHeight(t: TableDetail, custom: NodeCustom): number {
     visible = Math.min(visible, 14);
   }
   return 58 + visible * 17;
+}
+
+/** Conexión visible del lienzo: FK derivada del catálogo o join de una vista. */
+interface Conn {
+  id: string;
+  source: string;
+  target: string;
+  rel?: RelationshipInfo;
+  join?: ViewJoin;
+}
+
+type Pt = { x: number; y: number };
+
+/** Columnas que la conexión toca en cada extremo. */
+function connColumns(c: Conn): { source: string[]; target: string[] } {
+  if (c.rel) return { source: c.rel.columns, target: c.rel.ref_columns };
+  return { source: c.join?.source_columns ?? [], target: c.join?.target_columns ?? [] };
+}
+
+/** Clave de orden dentro de un lado: coordenada del otro extremo. */
+function perpKey(side: Side, other: Pt): number {
+  return side === "left" || side === "right" ? other.y : other.x;
+}
+
+/**
+ * Decide, para cada conexión, por qué lado sale/entra y en qué slot de ese lado.
+ *
+ * 1. El lado se elige por posición relativa de los centros (como antes).
+ * 2. Las conexiones que comparten `nodo + lado` se ordenan por la coordenada
+ *    del extremo opuesto y se reparten por el contorno de ese lado. Ordenarlas
+ *    así evita que las aristas se crucen entre sí al abrirse en abanico.
+ *
+ * Devuelve también qué handles quedan ocupados por nodo, para que TableNode
+ * dibuje solo esos puntos.
+ */
+function computeHandles(conns: Conn[], centers: Record<string, Pt>) {
+  const assign: Record<string, { sourceHandle: string; targetHandle: string }> = {};
+  const buckets = new Map<string, { connId: string; role: HandleRole; side: Side; key: number }[]>();
+  const FAR = 1e9; // los lazos reflexivos van al final de su lado
+
+  const put = (node: string, e: { connId: string; role: HandleRole; side: Side; key: number }) => {
+    const k = `${node}|${e.side}`;
+    const arr = buckets.get(k);
+    if (arr) arr.push(e);
+    else buckets.set(k, [e]);
+  };
+
+  for (const c of conns) {
+    const sc = centers[c.source] ?? { x: 0, y: 0 };
+    const tc = centers[c.target] ?? { x: 0, y: 0 };
+    const selfRef = c.source === c.target;
+    let sSide: Side;
+    let tSide: Side;
+    if (selfRef) {
+      // Lazo visible: sale por la derecha y vuelve por arriba. Los extremos se
+      // llevan a la esquina superior derecha (clave -FAR arriba del lado
+      // derecho, +FAR al final del lado superior) para que el lazo quede
+      // compacto y fuera del nodo, no escondido pegado al borde.
+      sSide = "right";
+      tSide = "top";
+    } else {
+      const dx = tc.x - sc.x;
+      const dy = tc.y - sc.y;
+      if (Math.abs(dy) > Math.abs(dx) * 1.15) {
+        // Separación predominantemente vertical: conectar arriba/abajo
+        sSide = dy > 0 ? "bottom" : "top";
+        tSide = dy > 0 ? "top" : "bottom";
+      } else {
+        sSide = dx >= 0 ? "right" : "left";
+        tSide = dx >= 0 ? "left" : "right";
+      }
+    }
+    // Valor por defecto (slot central) por si el bucket no llegara a resolverse.
+    assign[c.id] = {
+      sourceHandle: handleId("s", sSide, CENTER_SLOT),
+      targetHandle: handleId("t", tSide, CENTER_SLOT),
+    };
+    put(c.source, { connId: c.id, role: "s", side: sSide, key: selfRef ? -FAR : perpKey(sSide, tc) });
+    put(c.target, { connId: c.id, role: "t", side: tSide, key: selfRef ? FAR : perpKey(tSide, sc) });
+  }
+
+  const usage: HandleUsage = {};
+  for (const [k, arr] of buckets) {
+    const node = k.slice(0, k.lastIndexOf("|"));
+    arr.sort((a, b) => a.key - b.key || a.connId.localeCompare(b.connId));
+    const slots = spreadSlots(arr.length);
+    arr.forEach((e, i) => {
+      const id = handleId(e.role, e.side, slots[i]);
+      if (e.role === "s") assign[e.connId].sourceHandle = id;
+      else assign[e.connId].targetHandle = id;
+      const list = usage[node];
+      if (list) list.push(id);
+      else usage[node] = [id];
+    });
+  }
+  for (const node of Object.keys(usage)) usage[node] = [...new Set(usage[node])].sort();
+  return { assign, usage };
 }
 
 const EXPORT_FILTER = (el: HTMLElement) => {
@@ -131,6 +248,7 @@ function DiagramCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [rels, setRels] = useState<RelationshipInfo[]>([]);
   const [selectedRel, setSelectedRel] = useState<string | null>(null);
+  const [selectedCol, setSelectedCol] = useState<{ node: string; col: string } | null>(null);
   const [status, setStatus] = useState("");
   const [diagramId, setDiagramId] = useState<string | null>(null);
   const [diagramName, setDiagramNameRaw] = useState("Nuevo diagrama");
@@ -223,134 +341,205 @@ function DiagramCanvas({
     return m;
   }, [nodes]);
 
-  // Aristas derivadas de las relaciones + selección; el lado de conexión se
-  // recalcula al mover las tablas (la relación "se mueve" con ellas).
-  const edges: Edge[] = useMemo(
-    () =>
-      rels.map((r) => {
-        const id = relId(r);
-        const isSel = id === selectedRel;
-        const selfRef = r.source === r.target;
-        const sc = centers[r.source] ?? { x: 0, y: 0 };
-        const tc = centers[r.target] ?? { x: 0, y: 0 };
-        const dx = tc.x - sc.x;
-        const dy = tc.y - sc.y;
-        let sourceHandle: string;
-        let targetHandle: string;
-        if (selfRef) {
-          // Lazo visible: sale por la derecha y vuelve por arriba.
-          sourceHandle = "s-right";
-          targetHandle = "t-top";
-        } else if (Math.abs(dy) > Math.abs(dx) * 1.15) {
-          // Separación predominantemente vertical: conectar arriba/abajo
-          sourceHandle = dy > 0 ? "s-bottom" : "s-top";
-          targetHandle = dy > 0 ? "t-top" : "t-bottom";
-        } else {
-          sourceHandle = dx >= 0 ? "s-right" : "s-left";
-          targetHandle = dx >= 0 ? "t-left" : "t-right";
-        }
-        return {
-          id,
-          source: r.source,
-          target: r.target,
-          sourceHandle,
-          targetHandle,
-          type: selfRef ? "selfloop" : "smoothstep",
-          className: isSel ? "pgdiag-flow" : undefined,
-          label: r.inferred ? `${r.cardinality} (inferida)` : r.cardinality,
-          labelStyle: { fontSize: 11, fontWeight: 600, fill: isSel ? "#b45309" : "#12305c", color: isSel ? "#b45309" : "#12305c" },
-          labelBgStyle: { fill: "#fff", fillOpacity: 0.85 },
-          style: { stroke: "#5b8def", strokeWidth: 1.8 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: isSel ? "#f59e0b" : "#5b8def" },
-          data: { columns: r.columns, ref_columns: r.ref_columns },
-        };
-      }),
-    [rels, selectedRel, centers]
-  );
+  // --- Conexiones visibles: FKs + joins de vista ---
+  // Los joins de una vista reemplazan a las FK del mismo par de tablas, para
+  // que el diagrama se lea como la consulta.
+  const conns = useMemo<Conn[]>(() => {
+    const joinPairs = new Set(viewJoins.map((j) => [j.source, j.target].sort().join("|")));
+    const out: Conn[] = [];
+    for (const r of rels) {
+      if (joinPairs.has([r.source, r.target].sort().join("|"))) continue;
+      out.push({ id: relId(r), source: r.source, target: r.target, rel: r });
+    }
+    viewJoins.forEach((j, i) => {
+      if (!present.has(j.source) || !present.has(j.target)) return;
+      out.push({ id: `join:${i}:${j.source}->${j.target}`, source: j.source, target: j.target, join: j });
+    });
+    return out;
+  }, [rels, viewJoins, present]);
 
-  // Aristas de join de la vista (INNER/LEFT/...): reemplazan a las FK del
-  // mismo par de tablas para que el diagrama se lea como la consulta.
-  const joinEdges: Edge[] = useMemo(() => {
-    if (viewJoins.length === 0) return [];
-    const presentIds = new Set(nodes.map((n) => n.id));
-    return viewJoins
-      .filter((j) => presentIds.has(j.source) && presentIds.has(j.target))
-      .map((j, i) => {
-        const sc = centers[j.source] ?? { x: 0, y: 0 };
-        const tc = centers[j.target] ?? { x: 0, y: 0 };
-        const dx = tc.x - sc.x;
-        const dy = tc.y - sc.y;
-        const vertical = Math.abs(dy) > Math.abs(dx) * 1.15;
-        const id = `join:${i}:${j.source}->${j.target}`;
-        const isSel = id === selectedRel;
+  // Lado + slot de cada extremo. Se recalcula al mover las tablas: la relación
+  // "se mueve" con ellas y el reparto por el contorno se reordena solo.
+  const handles = useMemo(() => computeHandles(conns, centers), [conns, centers]);
+
+  // El mapa de handles ocupados viaja por contexto hasta TableNode. Se
+  // memoiza por contenido para no re-renderizar todos los nodos en cada
+  // fotograma de arrastre: solo cuando algún slot cambia de verdad.
+  const usageRef = useRef<HandleUsage>({});
+  const usageSig = useRef("");
+  const handleUsage = useMemo(() => {
+    const sig = JSON.stringify(handles.usage);
+    if (sig !== usageSig.current) {
+      usageSig.current = sig;
+      usageRef.current = handles.usage;
+    }
+    return usageRef.current;
+  }, [handles]);
+
+  // --- Selección: una arista (clic en la relación) o una columna (clic en el
+  // campo, que traza todas las relaciones en las que participa). ---
+  const activeEdgeIds = useMemo(() => {
+    if (selectedRel) return new Set([selectedRel]);
+    if (!selectedCol) return new Set<string>();
+    const ids = new Set<string>();
+    for (const c of conns) {
+      const cols = connColumns(c);
+      const hit =
+        (c.source === selectedCol.node && cols.source.includes(selectedCol.col)) ||
+        (c.target === selectedCol.node && cols.target.includes(selectedCol.col));
+      if (hit) ids.add(c.id);
+    }
+    return ids;
+  }, [selectedRel, selectedCol, conns]);
+
+  const allEdges: Edge[] = useMemo(() => {
+    // Varias relaciones reflexivas en la misma tabla se dibujan como lazos
+    // concéntricos (`ring`) para que no se solapen entre sí.
+    const ring = new Map<string, number>();
+    const perNode = new Map<string, number>();
+    for (const c of conns) {
+      if (c.source !== c.target) continue;
+      const k = perNode.get(c.source) ?? 0;
+      ring.set(c.id, k);
+      perNode.set(c.source, k + 1);
+    }
+    return conns.map((c) => {
+      const isSel = activeEdgeIds.has(c.id);
+      const selfRef = c.source === c.target;
+      const h = handles.assign[c.id];
+      const base = {
+        id: c.id,
+        source: c.source,
+        target: c.target,
+        sourceHandle: h?.sourceHandle,
+        targetHandle: h?.targetHandle,
+        className: isSel ? "pgdiag-flow" : undefined,
+        labelBgStyle: { fill: "#fff", fillOpacity: 0.85 },
+      };
+      if (c.join) {
         return {
-          id,
-          source: j.source,
-          target: j.target,
-          sourceHandle: vertical ? (dy > 0 ? "s-bottom" : "s-top") : dx >= 0 ? "s-right" : "s-left",
-          targetHandle: vertical ? (dy > 0 ? "t-top" : "t-bottom") : dx >= 0 ? "t-left" : "t-right",
+          ...base,
           type: "smoothstep",
-          className: isSel ? "pgdiag-flow" : undefined,
-          label: j.join_type,
+          label: c.join.join_type,
           labelStyle: { fontSize: 11, fontWeight: 700, fill: isSel ? "#b45309" : "#6d28d9" },
-          labelBgStyle: { fill: "#fff", fillOpacity: 0.9 },
           style: { stroke: "#8a63d2", strokeWidth: 2 },
           markerEnd: { type: MarkerType.ArrowClosed, color: isSel ? "#f59e0b" : "#8a63d2" },
         };
-      });
-  }, [viewJoins, nodes, centers, selectedRel]);
-
-  const allEdges = useMemo(() => {
-    if (joinEdges.length === 0) return edges;
-    const joinPairs = new Set(
-      viewJoins.map((j) => [j.source, j.target].sort().join("|"))
-    );
-    const fkVisible = edges.filter(
-      (e) => !joinPairs.has([e.source, e.target].sort().join("|"))
-    );
-    return [...fkVisible, ...joinEdges];
-  }, [edges, joinEdges, viewJoins]);
-
-  // Resaltado de columnas al seleccionar una relación (FK o join de vista)
-  useEffect(() => {
-    let src: string | null = null;
-    let tgt: string | null = null;
-    let srcCols: string[] = [];
-    let tgtCols: string[] = [];
-    const rel = rels.find((r) => relId(r) === selectedRel);
-    if (rel) {
-      src = rel.source;
-      tgt = rel.target;
-      srcCols = rel.columns;
-      tgtCols = rel.ref_columns;
-    } else if (selectedRel?.startsWith("join:")) {
-      const j = viewJoins[Number(selectedRel.split(":")[1])];
-      if (j) {
-        src = j.source;
-        tgt = j.target;
-        srcCols = j.source_columns ?? [];
-        tgtCols = j.target_columns ?? [];
       }
+      const r = c.rel!;
+      // Las reflexivas llevan color propio (índigo) y trazo algo más grueso:
+      // sin eso se confunden con las aristas que solo pasan cerca del nodo.
+      const stroke = selfRef ? (isSel ? "#f59e0b" : "#7c3aed") : "#5b8def";
+      return {
+        ...base,
+        type: selfRef ? "selfloop" : "smoothstep",
+        label: r.inferred ? `${r.cardinality} (inferida)` : r.cardinality,
+        labelStyle: {
+          fontSize: 11,
+          fontWeight: selfRef ? 700 : 600,
+          fill: isSel ? "#b45309" : selfRef ? "#6d28d9" : "#12305c",
+          color: isSel ? "#b45309" : selfRef ? "#6d28d9" : "#12305c",
+        },
+        style: { stroke, strokeWidth: selfRef ? 2.2 : 1.8 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+        data: {
+          columns: r.columns,
+          ref_columns: r.ref_columns,
+          ring: ring.get(c.id) ?? 0,
+          selected: isSel,
+        },
+      };
+    });
+  }, [conns, handles, activeEdgeIds]);
+
+  /** Destinos alcanzables desde la columna seleccionada (para el panel). */
+  const colTrace = useMemo(() => {
+    if (!selectedCol) return [];
+    const out: { edgeId: string; other: string; otherCols: string; label: string; outgoing: boolean }[] = [];
+    for (const c of conns) {
+      if (!activeEdgeIds.has(c.id)) continue;
+      const cols = connColumns(c);
+      const outgoing = c.source === selectedCol.node && cols.source.includes(selectedCol.col);
+      out.push({
+        edgeId: c.id,
+        other: outgoing ? c.target : c.source,
+        otherCols: (outgoing ? cols.target : cols.source).join(", "),
+        label: c.rel
+          ? c.rel.inferred
+            ? `${c.rel.cardinality} (inferida)`
+            : c.rel.cardinality
+          : (c.join?.join_type ?? ""),
+        outgoing,
+      });
     }
-    setNodes((ns) =>
-      ns.map((n) => {
+    return out;
+  }, [selectedCol, conns, activeEdgeIds]);
+
+  // Resaltado: columnas implicadas en las relaciones activas + marcado de las
+  // tablas origen/destino, para poder seguir la relación de un vistazo.
+  useEffect(() => {
+    const hl = new Map<string, Set<string>>();
+    const add = (node: string, cols: string[]) => {
+      const s = hl.get(node) ?? new Set<string>();
+      cols.forEach((c) => s.add(c));
+      hl.set(node, s);
+    };
+    const involved = new Set<string>();
+    for (const c of conns) {
+      if (!activeEdgeIds.has(c.id)) continue;
+      const cols = connColumns(c);
+      add(c.source, cols.source);
+      add(c.target, cols.target);
+      involved.add(c.source);
+      involved.add(c.target);
+    }
+    const origin = selectedCol?.node ?? null;
+    setNodes((ns) => {
+      let changed = false;
+      const next = ns.map((n) => {
         if (n.type !== "table") return n;
-        let hl: string[] = [];
-        if (src !== null) {
-          if (n.id === src) hl = [...srcCols];
-          if (n.id === tgt) hl = n.id === src ? [...srcCols, ...tgtCols] : [...tgtCols];
+        const hlCols = [...(hl.get(n.id) ?? [])];
+        const picked = origin === n.id ? selectedCol!.col : undefined;
+        const cls =
+          origin === n.id
+            ? "pgdiag-origin"
+            : origin && involved.has(n.id)
+              ? "pgdiag-dest"
+              : undefined;
+        const d = n.data as { highlight?: string[]; pickedColumn?: string };
+        const prev = d.highlight ?? [];
+        if (
+          prev.length === hlCols.length &&
+          prev.every((c, i) => c === hlCols[i]) &&
+          d.pickedColumn === picked &&
+          n.className === cls
+        ) {
+          return n;
         }
-        const prev = (n.data as { highlight?: string[] }).highlight ?? [];
-        if (prev.length === 0 && hl.length === 0) return n;
-        return { ...n, data: { ...n.data, highlight: hl } };
-      })
-    );
-  }, [selectedRel, rels, viewJoins, setNodes]);
+        changed = true;
+        return { ...n, className: cls, data: { ...n.data, highlight: hlCols, pickedColumn: picked } };
+      });
+      // Devolver la MISMA referencia si nada cambió: `conns` depende de los
+      // nodos, así que un array nuevo aquí dispararía un bucle infinito.
+      return changed ? next : ns;
+    });
+  }, [activeEdgeIds, conns, selectedCol, setNodes]);
 
   const removeTable = useCallback(
     (key: string) => setNodes((ns) => ns.filter((n) => n.id !== key)),
     [setNodes]
   );
+
+  /** Clic en una columna: traza sus relaciones (segundo clic, las suelta). */
+  const pickColumn = useCallback((key: string, column: string) => {
+    setSelectedRel(null);
+    setSelectedCol((cur) => (cur && cur.node === key && cur.col === column ? null : { node: key, col: column }));
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedRel(null);
+    setSelectedCol(null);
+  }, []);
 
   const updateCustom = useCallback(
     (key: string, patch: Partial<NodeCustom>) => {
@@ -421,10 +610,11 @@ function DiagramCanvas({
           onRemove: removeTable,
           onCustomChange: updateCustom,
           onAddRelated: (k: string, d: "in" | "out" | "both") => void addRelatedRef.current(k, d),
+          onColumnClick: pickColumn,
         },
       }) as Node,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [removeTable, updateCustom]
+    [removeTable, updateCustom, pickColumn]
   );
 
   const addTable = useCallback(
@@ -513,7 +703,7 @@ function DiagramCanvas({
         g.setNode(n.id, { width: 230, height: nodeHeight(d.table, d.custom) });
       }
     }
-    for (const e of [...edges, ...joinEdges]) {
+    for (const e of allEdges) {
       if (g.hasNode(e.source) && g.hasNode(e.target)) g.setEdge(e.source, e.target);
     }
     dagre.layout(g);
@@ -525,7 +715,7 @@ function DiagramCanvas({
       })
     );
     setTimeout(() => void fitView({ padding: 0.15 }), 50);
-  }, [nodes, edges, joinEdges, setNodes, fitView]);
+  }, [nodes, allEdges, setNodes, fitView]);
 
   const autoLayoutRef = useRef(autoLayout);
   useEffect(() => {
@@ -540,7 +730,7 @@ function DiagramCanvas({
       setTimeout(() => autoLayoutRef.current(), 180);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edges, nodes.length]);
+  }, [allEdges, nodes.length]);
 
   // Inicialización de la pestaña "diagrama de una vista"
   useEffect(() => {
@@ -670,7 +860,7 @@ function DiagramCanvas({
         })
       );
       setNodes([]);
-      setSelectedRel(null);
+      clearSelection();
       setNodes(
         details.map(({ np, table }) =>
           buildTableNode(np.table, table, { x: np.x, y: np.y }, {
@@ -698,7 +888,7 @@ function DiagramCanvas({
     setDiagramId(null);
     setDiagramName("Nuevo diagrama");
     setNodes([]);
-    setSelectedRel(null);
+    clearSelection();
   }
 
   // --- Buscador de nodos del diagrama ---
@@ -795,7 +985,7 @@ function DiagramCanvas({
     (doc: PgDiagFile, layout: boolean) => {
       setDiagramName(doc.name || "Diagrama");
       setViewJoins([]);
-      setSelectedRel(null);
+      clearSelection();
       fileRels.current = doc.relationships ?? [];
       const nodesFromDoc: Node[] = [];
       for (const np of doc.nodes ?? []) {
@@ -869,7 +1059,7 @@ function DiagramCanvas({
         width={300}
         draggable
         presentKeys={present}
-        hint="Arrastra una tabla al lienzo (o doble clic). ⇲ en un nodo trae sus relacionadas (elige dirección)."
+        hint="Arrastra una tabla al lienzo (o doble clic). ⇲ en un nodo trae sus relacionadas. Clic en una columna para seguir su relación."
         onItemDoubleClick={(o) =>
           void addTable(`${o.schema_name}.${o.name}`, {
             x: 80 + Math.random() * 240,
@@ -1035,26 +1225,76 @@ function DiagramCanvas({
               <p className="fs-5 mb-2 fw-semibold">Lienzo vacío</p>
               <p className="small mb-1">🖱 Arrastra una tabla desde el panel izquierdo (o doble clic).</p>
               <p className="small mb-1">⇲ En cada nodo trae sus tablas relacionadas.</p>
+              <p className="small mb-1">🖱 Clic en una columna: sigue su relación hasta la tabla destino.</p>
               <p className="small mb-1">🖱 Clic derecho en una vista: «Crear diagrama de esta vista».</p>
               <p className="small mb-0">📂 O abre un archivo .pgdiag con el botón «Archivo».</p>
             </div>
           )}
-          <ReactFlow
-            nodes={nodes}
-            edges={allEdges}
-            onNodesChange={onNodesChange}
-            onEdgeClick={(_, edge) => setSelectedRel((cur) => (cur === edge.id ? null : edge.id))}
-            onPaneClick={() => setSelectedRel(null)}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-            fitView
-            proOptions={{ hideAttribution: true }}
-            minZoom={0.1}
-          >
-            <Background gap={18} />
-            <Controls />
-            <MiniMap pannable zoomable />
-          </ReactFlow>
+          {/* Trazado de la columna seleccionada: a dónde lleva la relación */}
+          {selectedCol && (
+            <div
+              className="position-absolute shadow"
+              style={{
+                zIndex: 7,
+                left: "50%",
+                transform: "translateX(-50%)",
+                bottom: 14,
+                maxWidth: 520,
+                background: "var(--bs-body-bg)",
+                border: "1px solid var(--bs-border-color)",
+                borderRadius: 8,
+                overflow: "hidden",
+              }}
+            >
+              <div className="d-flex align-items-center gap-2 px-3 py-1 border-bottom">
+                <span className="badge text-bg-primary">🔗 {selectedCol.node}.{selectedCol.col}</span>
+                <span className="flex-grow-1" />
+                <button className="btn-close btn-sm" title="Cerrar" onClick={clearSelection} />
+              </div>
+              {colTrace.length === 0 ? (
+                <div className="px-3 py-2 small text-body-secondary">
+                  Esta columna no participa en ninguna relación con las tablas del lienzo.
+                </div>
+              ) : (
+                <div style={{ maxHeight: 168, overflowY: "auto" }}>
+                  {colTrace.map((t) => (
+                    <button
+                      key={t.edgeId}
+                      className="btn btn-sm w-100 text-start d-flex align-items-center gap-2 px-3 py-1 border-0 rounded-0"
+                      onClick={() => focusNode(t.other)}
+                      title="Centrar la vista en esta tabla"
+                    >
+                      <span style={{ opacity: 0.7 }}>{t.outgoing ? "→" : "←"}</span>
+                      <span className="fw-semibold text-truncate">{t.other}</span>
+                      {t.otherCols && <span className="text-body-secondary small">.{t.otherCols}</span>}
+                      <span className="badge text-bg-secondary ms-auto">{t.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <HandleUsageContext.Provider value={handleUsage}>
+            <ReactFlow
+              nodes={nodes}
+              edges={allEdges}
+              onNodesChange={onNodesChange}
+              onEdgeClick={(_, edge) => {
+                setSelectedCol(null);
+                setSelectedRel((cur) => (cur === edge.id ? null : edge.id));
+              }}
+              onPaneClick={clearSelection}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              fitView
+              proOptions={{ hideAttribution: true }}
+              minZoom={0.1}
+            >
+              <Background gap={18} />
+              <Controls />
+              <MiniMap pannable zoomable />
+            </ReactFlow>
+          </HandleUsageContext.Provider>
         </div>
       </div>
     </div>
