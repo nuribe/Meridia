@@ -2,8 +2,18 @@
  * Pestaña de consulta SQL, dividida en dos: editor (arriba) y resultados (abajo).
  * El editor usa CodeMirror con lenguaje SQL — resaltado de palabras reservadas
  * y autocompletado (IntelliSense) alimentado con los schemas/tablas/columnas
- * del snapshot. La ejecución es de solo lectura (transacción READ ONLY en el
- * servidor). Ctrl/Cmd+Enter ejecuta.
+ * del snapshot, incluidas las tablas citadas sin calificar en el FROM/JOIN.
+ * F5 y Ctrl/Cmd+Enter ejecutan; si hay texto seleccionado se ejecuta solo esa
+ * selección, como en cualquier cliente SQL.
+ *
+ * El script se parte por sentencias en el servidor y cada una devuelve su
+ * propio bloque, que aquí se muestra en una sub-pestaña. Si una falla, la
+ * ejecución se detiene ahí y se conservan los resultados anteriores.
+ *
+ * Qué se puede ejecutar depende del perfil: por defecto solo lectura
+ * (transacción READ ONLY en el servidor); con «Permitir escritura» activado,
+ * cualquier sentencia. Un UPDATE o DELETE sin WHERE se rechaza la primera vez
+ * y se reenvía con confirm=true si el usuario acepta el aviso.
  *
  * El panel inferior tiene dos pestañas: «Datos» (la tabla de resultados, con
  * un filtro por columna que actúa sobre las filas ya traídas) y «Plan de
@@ -24,6 +34,7 @@ import {
   type ExplainPlan,
   type IntrospectSummary,
   type ParsedQuery,
+  type StatementResult,
 } from "./api/client";
 import { currentTheme, THEMES } from "./theme";
 import QueryBuilder from "./QueryBuilder";
@@ -49,6 +60,8 @@ interface Props {
   profileId: string;
   /** Motor del perfil: fija el dialecto del editor y el tipo de plan. */
   engine: DbEngine;
+  /** ¿El perfil admite DDL/DML? Cambia el texto de ayuda y el placeholder. */
+  allowWrites: boolean;
   dbname: string;
   summary: IntrospectSummary | null;
   /** Detalle de columnas por tabla, para autocompletar (se carga bajo demanda). */
@@ -57,12 +70,29 @@ interface Props {
   active: boolean;
 }
 
-interface Result {
-  columns: string[];
-  rows: unknown[][];
-  rowCount: number;
-  truncated: boolean;
-  elapsedMs: number;
+/** Rótulo corto de una sub-pestaña de resultado, a partir de su sentencia. */
+function statementLabel(statement: string, index: number): string {
+  const oneLine = statement.replace(/--[^\n]*/g, " ").replace(/\s+/g, " ").trim();
+  if (!oneLine) return `Resultado ${index + 1}`;
+  return oneLine.length > 38 ? `${oneLine.slice(0, 38)}…` : oneLine;
+}
+
+/**
+ * Nombres de relación citados en la sentencia, calificados o no.
+ *
+ * Sirve para precargar columnas: sin esto, escribir `FROM aviso` no ofrece
+ * ninguna columna porque el autocompletado solo conocía `schema.tabla`.
+ */
+function referencedRelations(text: string): { schema: string | null; name: string }[] {
+  const out: { schema: string | null; name: string }[] = [];
+  const re =
+    /\b(?:from|join|into|update|delete\s+from|truncate|table)\s+(?:only\s+)?([a-z_"[\]][\w"[\]]*)(?:\s*\.\s*([a-z_"[\]][\w"[\]]*))?/gi;
+  for (const m of text.matchAll(re)) {
+    const clean = (s: string) => s.replace(/["[\]]/g, "");
+    if (m[2]) out.push({ schema: clean(m[1]), name: clean(m[2]) });
+    else out.push({ schema: null, name: clean(m[1]) });
+  }
+  return out;
 }
 
 /** Texto con el que se compara un valor de celda en los filtros de columna. */
@@ -70,18 +100,27 @@ function cellText(v: unknown): string {
   return v === null || v === undefined ? "null" : String(v);
 }
 
-export default function QueryTab({ profileId, engine, dbname, summary, loadColumns, active }: Props) {
+export default function QueryTab({ profileId, engine, allowWrites, dbname, summary, loadColumns, active }: Props) {
   const [sqlText, setSqlText] = useState(
-    "-- Escribe tu consulta (solo lectura). Ctrl+Enter para ejecutar.\nSELECT * FROM "
+    allowWrites
+      ? "-- Escribe tu sentencia. Ctrl+Enter para ejecutar.\nSELECT * FROM "
+      : "-- Escribe tu consulta (solo lectura). Ctrl+Enter para ejecutar.\nSELECT * FROM "
   );
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<Result | null>(null);
+  // Un bloque por sentencia del script; la sub-pestaña activa se elige aparte.
+  const [results, setResults] = useState<StatementResult[]>([]);
+  const [activeResult, setActiveResult] = useState(0);
+  /** Índice de la sentencia que cortó la ejecución; null si no hubo error. */
+  const [errorIndex, setErrorIndex] = useState<number | null>(null);
   const [error, setError] = useState<{ message: string; hint?: string | null } | null>(null);
+  // Aviso pendiente de aceptar (UPDATE/DELETE sin WHERE).
+  const [pendingConfirm, setPendingConfirm] = useState<{ message: string; hint: string | null } | null>(null);
   const [colCache, setColCache] = useState<Record<string, string[]>>({});
   // Panel inferior: tabla de datos o plan de ejecución.
   const [resultTab, setResultTab] = useState<"data" | "plan">("data");
-  // Filtros por columna, aplicados en cliente sobre las filas ya traídas.
-  const [colFilters, setColFilters] = useState<Record<number, string>>({});
+  // Filtros por columna, aplicados en cliente. Clave "resultado:columna" para
+  // que cada sub-pestaña conserve los suyos.
+  const [colFilters, setColFilters] = useState<Record<string, string>>({});
   // Plan de ejecución (se pide bajo demanda al abrir su pestaña).
   const [plan, setPlan] = useState<ExplainPlan | null>(null);
   const [planMode, setPlanMode] = useState<ExplainMode>("estimated");
@@ -156,6 +195,25 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary]);
 
+  /**
+   * Esquema en el que vive una tabla citada sin calificar.
+   *
+   * Se prefiere el esquema por defecto del motor; si no está ahí, vale con que
+   * el nombre sea único en la base. Si es ambiguo se devuelve null: adivinar
+   * daría columnas de otra tabla.
+   */
+  const resolveSchema = useCallback(
+    (name: string): string | null => {
+      const def = engine === "sqlserver" ? "dbo" : "public";
+      if (objectsBySchema[def]?.includes(name)) return def;
+      const owners = Object.entries(objectsBySchema)
+        .filter(([, tables]) => tables.includes(name))
+        .map(([schema]) => schema);
+      return owners.length === 1 ? owners[0] : null;
+    },
+    [objectsBySchema, engine]
+  );
+
   const sqlExtension = useMemo(() => {
     const ns: SQLNamespace = {};
     for (const [schema, tables] of Object.entries(objectsBySchema)) {
@@ -165,36 +223,69 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
       }
       ns[schema] = tableMap;
     }
+    // Las tablas ya citadas sin calificar se registran también en la raíz del
+    // namespace: así `aviso.` propone sus columnas aunque no lleve esquema.
+    for (const { schema, name } of referencedRelations(sqlText)) {
+      const owner = schema ?? resolveSchema(name);
+      if (!owner) continue;
+      const cols = colCache[`${owner}.${name}`];
+      if (cols?.length && !(name in ns)) ns[name] = cols;
+    }
     return sql({
       dialect: engine === "sqlserver" ? MSSQL_CI : PostgreSQL,
       schema: ns,
+      defaultSchema: engine === "sqlserver" ? "dbo" : "public",
       upperCaseKeywords: true,
     });
-  }, [objectsBySchema, colCache, engine]);
+  }, [objectsBySchema, colCache, engine, sqlText, resolveSchema]);
 
-  async function run() {
-    const text = sqlText.trim();
+  /**
+   * SQL que se va a ejecutar: la selección del editor si la hay, o todo.
+   *
+   * Es el comportamiento de cualquier cliente SQL — permite tener un script
+   * largo y lanzar solo el trozo que interesa.
+   */
+  function sqlToRun(): string {
+    const view = editorRef.current?.view;
+    if (view) {
+      const { from, to } = view.state.selection.main;
+      if (from !== to) return view.state.sliceDoc(from, to).trim();
+    }
+    return sqlText.trim();
+  }
+
+  /**
+   * Ejecuta el script. Con `confirm` se reintenta tras aceptar el aviso de
+   * UPDATE/DELETE sin WHERE que devuelve el servidor.
+   */
+  async function run(confirm = false) {
+    const text = sqlToRun();
     if (!text || running) return;
     setRunning(true);
     setError(null);
+    setPendingConfirm(null);
     // Los resultados anteriores (y su plan) dejan de ser válidos.
     setColFilters({});
+    setActiveResult(0);
     setPlan(null);
     setPlanError(null);
     planKey.current = "";
     try {
-      const r = await api.runQuery(profileId, dbname, text, 1000);
-      setResult({
-        columns: r.columns,
-        rows: r.rows,
-        rowCount: r.row_count,
-        truncated: r.truncated,
-        elapsedMs: r.elapsed_ms,
-      });
+      const r = await api.runQuery(profileId, dbname, text, 1000, confirm);
+      setResults(r.results);
+      setError(r.error ? { message: r.error.message, hint: r.error.hint } : null);
+      setErrorIndex(r.error_index);
+      // Al fallar, se muestra la última que sí produjo resultado.
+      setActiveResult(Math.max(0, r.results.length - 1));
     } catch (e) {
       const err = e as ApiError;
-      setError({ message: err.message ?? String(e), hint: err.hint });
-      setResult(null);
+      if (err.code === "CONFIRM_REQUIRED") {
+        setPendingConfirm({ message: err.message, hint: err.hint ?? null });
+      } else {
+        setError({ message: err.message ?? String(e), hint: err.hint });
+      }
+      setResults([]);
+      setErrorIndex(null);
     } finally {
       setRunning(false);
     }
@@ -202,7 +293,7 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
 
   /** Pide el plan de ejecución de la sentencia actual (una vez por sql+modo). */
   async function loadPlan(force = false) {
-    const text = sqlText.trim();
+    const text = sqlToRun();
     if (!text) return;
     const key = `${planMode}::${text}`;
     if (!force && planKey.current === key) return;
@@ -239,25 +330,46 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resultTab, planMode]);
 
-  // Detecta menciones "schema.tabla" para precargar sus columnas
+  // Precarga columnas de las tablas mencionadas: tanto "schema.tabla" en
+  // cualquier posición como las citadas sin calificar tras FROM/JOIN/UPDATE…
   useEffect(() => {
-    const matches = sqlText.matchAll(/([a-z_][\w]*)\.([a-z_][\w]*)/gi);
-    for (const m of matches) {
+    for (const m of sqlText.matchAll(/([a-z_][\w]*)\.([a-z_][\w]*)/gi)) {
       if (objectsBySchema[m[1]]?.includes(m[2])) void ensureColumns(m[1], m[2]);
     }
+    for (const { schema, name } of referencedRelations(sqlText)) {
+      if (schema) continue; // ya cubierto por el bucle anterior
+      const owner = resolveSchema(name);
+      if (owner) void ensureColumns(owner, name);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sqlText, objectsBySchema]);
+  }, [sqlText, objectsBySchema, resolveSchema]);
 
   const runKeymap = useMemo(
     () =>
       Prec.highest(
         keymap.of([
           { key: "Mod-Enter", run: () => (void run(), true) },
+          // F5 como en cualquier cliente SQL. preventDefault evita que el
+          // WebView recargue la ventana.
+          { key: "F5", preventDefault: true, run: () => (void run(), true) },
         ])
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sqlText, running]
   );
+
+  // F5 también fuera del editor (p. ej. con el foco en la tabla de resultados).
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F5") return;
+      e.preventDefault();
+      void run();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, sqlText, running]);
 
   // Autocompletado (IntelliSense): TAB acepta la sugerencia resaltada; Enter NO
   // (siempre inserta salto de línea). Se desactiva el keymap por defecto y se
@@ -277,20 +389,30 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
 
   const cell: CSSProperties = { padding: "4px 10px", whiteSpace: "nowrap" };
 
-  const hasFilters = Object.values(colFilters).some((v) => v.trim() !== "");
+  /** Resultado que se está mostrando; null si aún no se ha ejecutado nada. */
+  const result = results[activeResult] ?? null;
+
+  /** Filtro de una columna del resultado activo. */
+  const filterOf = (ci: number) => colFilters[`${activeResult}:${ci}`] ?? "";
+  const setFilterOf = (ci: number, v: string) =>
+    setColFilters((f) => ({ ...f, [`${activeResult}:${ci}`]: v }));
+
+  const hasFilters = Object.entries(colFilters).some(
+    ([k, v]) => k.startsWith(`${activeResult}:`) && v.trim() !== ""
+  );
 
   /** Filas visibles tras aplicar los filtros de columna (con su índice original). */
   const visibleRows = useMemo(() => {
     const rows = result?.rows ?? [];
     const active = Object.entries(colFilters)
-      .filter(([, v]) => v.trim() !== "")
-      .map(([ci, v]) => [Number(ci), v.trim().toLowerCase()] as const);
+      .filter(([k, v]) => k.startsWith(`${activeResult}:`) && v.trim() !== "")
+      .map(([k, v]) => [Number(k.split(":")[1]), v.trim().toLowerCase()] as const);
     const indexed = rows.map((row, i) => [i, row] as const);
     if (active.length === 0) return indexed;
     return indexed.filter(([, row]) =>
       active.every(([ci, needle]) => cellText(row[ci]).toLowerCase().includes(needle))
     );
-  }, [result, colFilters]);
+  }, [result, colFilters, activeResult]);
 
   // --- Constructor gráfico de consultas ---
   function openBuilderEmpty() {
@@ -299,7 +421,7 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
   }
 
   async function openBuilderFromSql() {
-    const text = sqlText.trim();
+    const text = sqlToRun();
     if (!text) {
       openBuilderEmpty();
       return;
@@ -339,7 +461,12 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
     <div ref={containerRef} className="d-flex flex-column w-100 h-100" style={{ minHeight: 0 }}>
       {/* Barra de acciones */}
       <div className="d-flex align-items-center gap-2 px-3 py-2 border-bottom bg-body">
-        <button className="btn btn-sm btn-primary" onClick={() => void run()} disabled={running}>
+        <button
+          className="btn btn-sm btn-primary"
+          onClick={() => void run()}
+          disabled={running}
+          title="Ejecuta la selección si hay texto seleccionado; si no, todo el editor (F5)"
+        >
           {running ? (
             <>
               <span className="spinner-border spinner-border-sm me-1" /> Ejecutando…
@@ -348,7 +475,19 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
             "▶ Ejecutar"
           )}
         </button>
-        <small className="text-body-secondary">Ctrl/⌘ + Enter · solo lectura</small>
+        <small className="text-body-secondary">
+          F5 o Ctrl/⌘ + Enter · selección o todo ·{" "}
+          {allowWrites ? (
+            <span
+              className="text-warning-emphasis fw-semibold"
+              title="Este perfil puede ejecutar DDL/DML. Desactívalo editando la conexión."
+            >
+              escritura habilitada
+            </span>
+          ) : (
+            "solo lectura"
+          )}
+        </small>
         <div className="vr mx-1" />
         <button
           className="btn btn-sm btn-outline-primary"
@@ -374,8 +513,8 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
         <span className="flex-grow-1" />
         {result && (
           <small className="text-body-secondary">
-            {hasFilters ? `${visibleRows.length} de ${result.rowCount}` : `${result.rowCount}`} filas
-            {result.truncated ? " (primeras 1000)" : ""} · {result.elapsedMs} ms
+            {hasFilters ? `${visibleRows.length} de ${result.row_count}` : `${result.row_count}`} filas
+            {result.truncated ? " (primeras 1000)" : ""} · {result.elapsed_ms} ms
           </small>
         )}
       </div>
@@ -425,7 +564,18 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
         </li>
         {resultTab === "data" && hasFilters && (
           <li className="nav-item align-self-center ms-2">
-            <a className="link-secondary small" style={{ cursor: "pointer" }} onClick={() => setColFilters({})}>
+            <a
+              className="link-secondary small"
+              style={{ cursor: "pointer" }}
+              title="Limpia los filtros de este resultado"
+              onClick={() =>
+                setColFilters((f) =>
+                  Object.fromEntries(
+                    Object.entries(f).filter(([k]) => !k.startsWith(`${activeResult}:`))
+                  )
+                )
+              }
+            >
               ✕ Limpiar filtros
             </a>
           </li>
@@ -435,6 +585,17 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
       {/* Resultados: ocupan el resto del espacio, a ancho completo.
           El diagrama del plan gestiona su propio scroll (es un lienzo), así
           que en esa pestaña el contenedor no debe desbordar. */}
+      {/* Selector de resultado: FUERA del contenedor con scroll, para que no
+          se pierda de vista al bajar por una rejilla larga. */}
+      {resultTab === "data" && !pendingConfirm && results.length > 0 && (
+        <ResultTabs
+          results={results}
+          activeIndex={activeResult}
+          onSelect={setActiveResult}
+          errorIndex={errorIndex}
+        />
+      )}
+
       <div
         className="flex-grow-1"
         style={{ minHeight: 0, overflow: resultTab === "plan" ? "hidden" : "auto" }}
@@ -450,21 +611,56 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
             onRefresh={() => void loadPlan(true)}
             hasSql={sqlText.trim() !== ""}
           />
-        ) : error ? (
+        ) : pendingConfirm ? (
+          <div className="alert alert-warning m-3">
+            <div className="fw-semibold mb-1">⚠ Confirma antes de ejecutar</div>
+            <pre className="mb-0" style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>
+              {pendingConfirm.message}
+            </pre>
+            {pendingConfirm.hint && <div className="small mt-2">💡 {pendingConfirm.hint}</div>}
+            <div className="d-flex gap-2 mt-3">
+              <button
+                className="btn btn-sm btn-danger"
+                disabled={running}
+                onClick={() => void run(true)}
+              >
+                Ejecutar de todos modos
+              </button>
+              <button className="btn btn-sm btn-outline-secondary" onClick={() => setPendingConfirm(null)}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        ) : results.length === 0 && error ? (
           <div className="alert alert-danger m-3">
             <div className="fw-semibold mb-1">Error de consulta</div>
             <pre className="mb-0" style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{error.message}</pre>
             {error.hint && <div className="small mt-2">💡 {error.hint}</div>}
           </div>
-        ) : !result ? (
+        ) : results.length === 0 ? (
           <div className="text-body-secondary p-4 text-center">
             Ejecuta una consulta para ver los resultados aquí.
           </div>
-        ) : result.columns.length === 0 ? (
-          <div className="text-body-secondary p-4 text-center">
-            Consulta ejecutada sin conjunto de resultados.
-          </div>
         ) : (
+          <>
+            {error && (
+              <div className="alert alert-danger m-3 mb-0">
+                <div className="fw-semibold mb-1">
+                  Error en la sentencia {(errorIndex ?? 0) + 1}; se detuvo ahí
+                </div>
+                <pre className="mb-0" style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{error.message}</pre>
+                {error.hint && <div className="small mt-2">💡 {error.hint}</div>}
+              </div>
+            )}
+            {!result ? null : result.columns.length === 0 ? (
+              <div className="text-body-secondary p-4 text-center">
+                {result.affected_rows === null
+                  ? "Sentencia ejecutada sin conjunto de resultados."
+                  : `Sentencia ejecutada: ${result.affected_rows} ${
+                      result.affected_rows === 1 ? "fila afectada" : "filas afectadas"
+                    }.`}
+              </div>
+            ) : (
           <table className="table table-striped table-hover table-sm align-middle mb-0" style={{ fontSize: 13 }}>
             <thead className="table-light" style={{ position: "sticky", top: 0, zIndex: 1 }}>
               <tr>
@@ -483,10 +679,8 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
                       style={{ minWidth: 90, fontWeight: 400, fontSize: 12 }}
                       placeholder="Filtrar"
                       title={`Filtrar por ${c} (sobre las filas mostradas)`}
-                      value={colFilters[i] ?? ""}
-                      onChange={(e) =>
-                        setColFilters((f) => ({ ...f, [i]: e.target.value }))
-                      }
+                      value={filterOf(i)}
+                      onChange={(e) => setFilterOf(i, e.target.value)}
                     />
                   </th>
                 ))}
@@ -513,8 +707,68 @@ export default function QueryTab({ profileId, engine, dbname, summary, loadColum
               )}
             </tbody>
           </table>
+            )}
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Barra de selección de resultado, una entrada por sentencia ejecutada.
+ *
+ * Se renderiza fuera del contenedor con scroll y por eso permanece visible
+ * mientras se recorre una rejilla larga: sin ella no se sabría qué resultado
+ * se está viendo ni se podría cambiar sin volver arriba.
+ */
+function ResultTabs({
+  results,
+  activeIndex,
+  onSelect,
+  errorIndex,
+}: {
+  results: StatementResult[];
+  activeIndex: number;
+  onSelect: (i: number) => void;
+  errorIndex: number | null;
+}) {
+  return (
+    <div
+      className="d-flex align-items-center gap-1 px-2 py-1 border-bottom bg-body-tertiary flex-nowrap"
+      style={{ overflowX: "auto", overflowY: "hidden", flexShrink: 0 }}
+    >
+      <small className="text-body-secondary text-nowrap me-1 ps-1">Resultados</small>
+      {results.map((r, i) => {
+        const activo = i === activeIndex;
+        return (
+          <button
+            key={i}
+            onClick={() => onSelect(i)}
+            title={r.statement}
+            className={`btn btn-sm d-inline-flex align-items-center gap-2 text-nowrap py-0 ${
+              activo ? "btn-primary" : "btn-outline-secondary border-secondary-subtle"
+            }`}
+            style={{ fontSize: 12, lineHeight: "22px" }}
+          >
+            <span className={activo ? "fw-bold" : "fw-bold text-body-secondary"}>{i + 1}</span>
+            <span className="font-monospace">{statementLabel(r.statement, i)}</span>
+            <span className={activo ? "opacity-75" : "text-body-secondary"}>
+              {r.affected_rows === null
+                ? `${r.row_count}${r.truncated ? "+" : ""} filas`
+                : `${r.affected_rows} afectadas`}
+            </span>
+          </button>
+        );
+      })}
+      {errorIndex !== null && (
+        <span
+          className="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle fw-normal text-nowrap"
+          title="La ejecución se detuvo en esta sentencia"
+        >
+          ✕ falló la {errorIndex + 1}
+        </span>
+      )}
     </div>
   );
 }

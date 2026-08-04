@@ -28,13 +28,21 @@ sidecar/src/pg_diagrammer (Python, FastAPI + psycopg 3) → toda la lógica de m
 
 - Las contraseñas de conexión **solo** viven en el keychain del SO (vía `keyring` en Python / API nativa de Tauri).
 - El archivo de proyecto `.pgdiag` guarda únicamente una referencia (`connection_id`/`credential_ref`), **jamás** la contraseña en texto plano ni cifrada con criptografía propia.
-- La app es de **solo lectura** sobre la base del usuario: nunca ejecuta DDL/DML, solo `SELECT` sobre catálogos y datos.
+
+## Escritura sobre la base del usuario
+
+- **Por defecto la app es de solo lectura**: la exploración, los diagramas y la vista de datos nunca ejecutan DDL/DML, solo `SELECT` sobre catálogos y datos. Esto no es configurable.
+- La **única** vía de escritura es el editor de consultas, y solo si el perfil tiene `allow_writes = true` (casilla «Permitir escritura» al editar la conexión). El flag va en `ConnectionProfile`, se persiste en `profiles.json` y arranca apagado, también para los perfiles antiguos.
+- Con el flag apagado: PostgreSQL abre transacción `READ ONLY` y, en ambos motores, `is_read_statement()` rechaza antes de conectar todo lo que no sea `SELECT/WITH/SHOW/EXPLAIN/TABLE/VALUES/DESCRIBE` (código de error `READ_ONLY`).
+- Con el flag encendido hay un único freno: un `UPDATE` o `DELETE` sin `WHERE` devuelve `CONFIRM_REQUIRED` y solo se ejecuta si el cliente reenvía `confirm: true`.
+- **Pedir el plan de ejecución nunca debe alterar datos.** `EXPLAIN ANALYZE UPDATE …` ejecuta el UPDATE de verdad, así que en `explain_query` toda sentencia de escritura termina en `rollback()`, pase lo que pase.
+- No añadir otras rutas de escritura (ni «editar celda», ni «guardar cambios» en la vista de datos) sin decisión explícita del dueño del proyecto.
 
 ## Persistencia
 
 - Proyectos/diagramas se guardan como archivo **`.pgdiag`** (JSON versionado con `format_version`), no en SQLite ni en el keychain.
 - Metadatos se leen en bloque (no `information_schema`, no query-por-tabla): `pg_catalog` en PostgreSQL, catálogos `sys.*` en SQL Server. Ambos motores adaptan sus filas a la MISMA función `assemble()` (introspector.py), que es la única fuente de la derivación de cardinalidad. Se cachean en `MetadataCache` por conexión+schema.
-- El perfil lleva `engine` (`postgresql` | `sqlserver`, default postgresql para retrocompatibilidad) y `auth_method` (`sql` | `windows`; Windows integrada solo aplica a SQL Server: SSPI sin contraseña en Windows, NTLM con `DOMINIO\usuario`+contraseña en otro caso).
+- El perfil lleva `engine` (`postgresql` | `sqlserver`, default postgresql para retrocompatibilidad), `auth_method` (`sql` | `windows`; Windows integrada solo aplica a SQL Server: SSPI sin contraseña en Windows, NTLM con `DOMINIO\usuario`+contraseña en otro caso) y `allow_writes` (default `false`).
 
 ## Estructura de carpetas (mapa, no reorganizar sin razón)
 
@@ -92,4 +100,4 @@ cd app && npx tsc --noEmit        # chequeo de tipos del frontend
 
 ## Regla para agentes de IA
 
-Antes de proponer o aplicar un cambio que toque: el número de procesos/piezas, el mecanismo shell↔sidecar (HTTP+token en localhost), el manejo de credenciales (keychain), el formato de persistencia (`.pgdiag`), o el stack de alguna capa — **detente y pregunta**. Estos son los pilares de diseño documentados en `docs/pg-diagrammer-diseno.md`; cambiarlos sin consenso rompe la arquitectura acordada del proyecto.
+Antes de proponer o aplicar un cambio que toque: el número de procesos/piezas, el mecanismo shell↔sidecar (HTTP+token en localhost), el manejo de credenciales (keychain), las reglas de escritura sobre la base del usuario, el formato de persistencia (`.pgdiag`), o el stack de alguna capa — **detente y pregunta**. Estos son los pilares de diseño documentados en `docs/pg-diagrammer-diseno.md`; cambiarlos sin consenso rompe la arquitectura acordada del proyecto.

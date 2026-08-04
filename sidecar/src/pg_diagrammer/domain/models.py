@@ -71,6 +71,9 @@ class ConnectionProfile(BaseModel):
     credential_ref: str
     engine: Engine = Engine.postgresql
     auth_method: AuthMethod = AuthMethod.sql
+    # Permite ejecutar DDL/DML desde el editor de consultas. Apagado por
+    # defecto: sin él, la app se comporta como un visor de solo lectura.
+    allow_writes: bool = False
 
 
 class ProfileCreate(BaseModel):
@@ -84,6 +87,7 @@ class ProfileCreate(BaseModel):
     ssl_mode: SslMode = SslMode.prefer
     engine: Engine = Engine.postgresql
     auth_method: AuthMethod = AuthMethod.sql
+    allow_writes: bool = False
 
     @model_validator(mode="after")
     def _require_user(self):

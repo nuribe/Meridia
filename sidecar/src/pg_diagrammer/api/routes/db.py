@@ -20,6 +20,7 @@ from pg_diagrammer.connections.profiles import PasswordUnavailable
 from pg_diagrammer.domain.models import Engine, ObjectSummary, QuerySpec, Snapshot, TableKind
 from pg_diagrammer.domain import explain as explain_plan
 from pg_diagrammer.domain import query_builder
+from pg_diagrammer.domain.sql_script import split_statements
 from pg_diagrammer.errors import ApiError, DB_EXCEPTIONS, classify_db_error, classify_pg_error  # noqa: F401
 from pg_diagrammer.export.generators import to_dbml, to_mermaid
 from pg_diagrammer.introspection import introspector, mssql_introspector
@@ -35,6 +36,11 @@ def _ms_ident(name: str) -> str:
 
 
 _SQL_COMMENTS = re.compile(r"(--[^\n]*)|(/\*.*?\*/)", re.S)
+_SQL_LITERALS = re.compile(r"'(?:[^']|'')*'", re.S)
+
+# Sentencias que no modifican datos ni estructura. Es la frontera entre lo que
+# puede ejecutar un perfil normal y lo que exige `allow_writes`.
+READ_KEYWORDS = ("SELECT", "WITH", "SHOW", "EXPLAIN", "TABLE", "VALUES", "DESCRIBE")
 
 
 def _first_keyword(sql_text: str) -> str:
@@ -42,6 +48,42 @@ def _first_keyword(sql_text: str) -> str:
     stripped = _SQL_COMMENTS.sub(" ", sql_text).lstrip().lstrip("(").lstrip()
     parts = stripped.split(None, 1)
     return parts[0].upper() if parts else ""
+
+
+def is_read_statement(sql_text: str) -> bool:
+    """¿La sentencia es de solo lectura?"""
+    return _first_keyword(sql_text) in READ_KEYWORDS
+
+
+def missing_where(sql_text: str) -> bool:
+    """UPDATE o DELETE sin WHERE, que es el error destructivo más habitual.
+
+    Se ignoran comentarios y literales para que un `WHERE` dentro de una
+    cadena no cuente como cláusula real.
+    """
+    if _first_keyword(sql_text) not in ("UPDATE", "DELETE"):
+        return False
+    clean = _SQL_LITERALS.sub(" ", _SQL_COMMENTS.sub(" ", sql_text))
+    return re.search(r"\bwhere\b", clean, re.IGNORECASE) is None
+
+
+def _read_only_error() -> JSONResponse:
+    return _error(400, ApiError(
+        code="READ_ONLY",
+        message="Este perfil está en modo solo lectura.",
+        hint="Activa «Permitir escritura» al editar el perfil de conexión "
+             "para poder ejecutar DDL/DML.",
+    ))
+
+
+def _confirm_error(sql_text: str) -> JSONResponse:
+    verbo = _first_keyword(sql_text)
+    return _error(400, ApiError(
+        code="CONFIRM_REQUIRED",
+        message=f"{verbo} sin WHERE: afectará a TODAS las filas de la tabla.",
+        hint="Si es intencionado, vuelve a ejecutar para confirmar.",
+        retriable=True,
+    ))
 
 
 def _snapshot(request: Request, profile_id: str, dbname: str, force: bool = False):
@@ -459,75 +501,137 @@ class QueryRequest(BaseModel):
     sql: str
     max_rows: int = 1000
     timeout_ms: int = 15000
+    # El cliente reenvía la consulta con confirm=True tras aceptar el aviso de
+    # UPDATE/DELETE sin WHERE.
+    confirm: bool = False
+
+
+def _sql_error(profile, exc: Exception) -> ApiError:
+    """Traduce una excepción del driver al envelope de error de la API."""
+    err = classify_db_error(profile.engine, exc)
+    # Errores de SQL del usuario: mensaje directo del servidor.
+    if isinstance(exc, (psycopg.Error, pytds.Error)) and err.code == "UNEXPECTED":
+        hint = None
+        if isinstance(exc, psycopg.errors.ReadOnlySqlTransaction):
+            hint = ("Este perfil está en modo solo lectura. Activa «Permitir "
+                    "escritura» al editar el perfil para ejecutar DDL/DML.")
+        return ApiError(code="SQL_ERROR", message=str(exc).strip(), hint=hint)
+    return err
+
+
+def _run_one(cur, conn, statement: str, max_rows: int, writes: bool) -> dict:
+    """Ejecuta una sentencia y devuelve su bloque de resultado."""
+    import time
+    t0 = time.perf_counter()
+    cur.execute(statement)
+    if cur.description is None:
+        # Sin filas de salida: DML, DDL o SET. rowcount vale -1 cuando el
+        # driver no sabe cuántas filas se tocaron.
+        affected = cur.rowcount
+        if writes:
+            # pytds no confirma al cerrar y psycopg sí; ser explícito evita
+            # depender del driver.
+            conn.commit()
+        return {
+            "statement": statement,
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "affected_rows": affected if affected is not None and affected >= 0 else None,
+            "truncated": False,
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+        }
+    columns = [d[0] for d in cur.description]
+    fetched = cur.fetchmany(max_rows + 1)
+    truncated = len(fetched) > max_rows
+    rows = [[_jsonable(v) for v in row] for row in fetched[:max_rows]]
+    if writes:
+        conn.commit()  # p. ej. UPDATE … RETURNING
+    return {
+        "statement": statement,
+        "columns": columns,
+        "rows": rows,
+        "row_count": len(rows),
+        "affected_rows": None,
+        "truncated": truncated,
+        "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+    }
 
 
 @router.post("/profiles/{profile_id}/db/{dbname}/query")
 def run_query(profile_id: str, dbname: str, body: QueryRequest, request: Request):
-    """Ejecuta una consulta del usuario en modo de SOLO LECTURA.
+    """Ejecuta el script del usuario, sentencia a sentencia.
 
-    PostgreSQL: transacción READ ONLY (rechaza INSERT/UPDATE/DELETE/DDL) +
-    statement_timeout. SQL Server: validación de que la sentencia empiece por
-    SELECT/WITH + timeout de consulta del driver. En ambos: límite de filas
-    devueltas y las mismas credenciales del perfil.
+    El texto se separa por `;` (respetando literales, comentarios y
+    dollar-quoting) y cada sentencia produce su propio bloque de resultado, de
+    modo que el cliente puede mostrar una rejilla por consulta.
+
+    Si una sentencia falla se **para ahí**: la respuesta lleva los resultados
+    de las anteriores más `error` y `error_index`. Por eso el estado HTTP es
+    200 aunque haya error: la ejecución sí ocurrió, parcialmente. Los rechazos
+    previos a ejecutar nada (solo lectura, confirmación, script vacío) siguen
+    siendo 4xx con el envelope de siempre.
+
+    Por defecto el perfil es de SOLO LECTURA: PostgreSQL abre una transacción
+    READ ONLY y en ambos motores se rechaza toda sentencia que no sea de
+    lectura — **todas**, no solo la primera, porque `SELECT 1; DELETE …` sería
+    si no una vía de escape en SQL Server. Con `allow_writes` activo se admite
+    DDL/DML, con un único freno: un UPDATE o DELETE sin WHERE exige
+    confirmación explícita.
     """
     store = request.app.state.profiles
     profile = store.get(profile_id)
     if profile is None:
         return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
-    sql_text = body.sql.strip().rstrip(";")
-    if not sql_text:
+    statements = split_statements(body.sql)
+    if not statements:
         return _error(422, ApiError(code="VALIDATION", message="Consulta vacía."))
     max_rows = max(1, min(body.max_rows, 5000))
     timeout = max(1000, min(body.timeout_ms, 60000))
     is_mssql = profile.engine == Engine.sqlserver
-    # SQL Server no tiene transacciones READ ONLY: se valida que la sentencia
-    # sea de lectura (una sola sentencia SELECT/WITH) antes de ejecutar.
-    if is_mssql and _first_keyword(sql_text) not in ("SELECT", "WITH"):
-        return _error(400, ApiError(
-            code="SQL_ERROR",
-            message="Sentencia no permitida en el editor.",
-            hint="Solo se permiten consultas de lectura (SELECT, WITH…).",
-        ))
+    writes = profile.allow_writes
+    # SQL Server no tiene transacciones READ ONLY, así que la barrera se
+    # comprueba aquí para los dos motores y el mensaje es el mismo.
+    if not writes:
+        for st in statements:
+            if not is_read_statement(st):
+                return _read_only_error()
+    if writes and not body.confirm:
+        for st in statements:
+            if missing_where(st):
+                return _confirm_error(st)
+
+    results: list[dict] = []
+    failed: ApiError | None = None
     try:
         import time
         t0 = time.perf_counter()
         with manager.open_profile_connection(
             store, profile, dbname, query_timeout_ms=timeout if is_mssql else 0
         ) as conn:
-            if not is_mssql:
+            if not is_mssql and not writes:
                 conn.read_only = True  # transacción de solo lectura
             with conn.cursor() as cur:
                 if not is_mssql:
                     cur.execute(f"SET statement_timeout = {int(timeout)}")
-                cur.execute(sql_text)
-                if cur.description is None:
-                    # Sentencia sin resultados (p. ej. SET); no debería ocurrir en READ ONLY
-                    return {"ok": True, "columns": [], "rows": [], "row_count": cur.rowcount, "truncated": False, "elapsed_ms": 0}
-                columns = [d[0] for d in cur.description]
-                fetched = cur.fetchmany(max_rows + 1)
-                truncated = len(fetched) > max_rows
-                rows = [[_jsonable(v) for v in row] for row in fetched[:max_rows]]
-        elapsed = int((time.perf_counter() - t0) * 1000)
+                for st in statements:
+                    try:
+                        results.append(_run_one(cur, conn, st, max_rows, writes))
+                    except DB_EXCEPTIONS as exc:
+                        failed = _sql_error(profile, exc)
+                        break  # se conserva lo ya ejecutado
         return {
-            "ok": True,
-            "columns": columns,
-            "rows": rows,
-            "row_count": len(rows),
-            "truncated": truncated,
-            "elapsed_ms": elapsed,
+            "ok": failed is None,
+            "results": results,
+            "error": failed.model_dump() if failed else None,
+            "error_index": len(results) if failed else None,
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         }
     except PasswordUnavailable:
         return password_missing_error(profile_id)
     except DB_EXCEPTIONS as exc:
-        err = classify_db_error(profile.engine, exc)
-        # Errores de SQL del usuario: mensaje directo del servidor
-        if isinstance(exc, (psycopg.Error, pytds.Error)) and err.code == "UNEXPECTED":
-            msg = str(exc).strip()
-            hint = None
-            if isinstance(exc, psycopg.errors.ReadOnlySqlTransaction):
-                hint = "Solo se permiten consultas de lectura (SELECT, WITH, SHOW…)."
-            return _error(400, ApiError(code="SQL_ERROR", message=msg, hint=hint))
-        return _error(400, err)
+        # Fallo al conectar o al preparar la sesión: no se ejecutó nada.
+        return _error(400, _sql_error(profile, exc))
     except MemoryError:
         # Un SELECT sobre una tabla enorme puede agotar la memoria del sidecar
         # antes de recortar a max_rows: se responde en vez de morir.
@@ -554,28 +658,32 @@ class ExplainRequest(BaseModel):
 def explain_query(profile_id: str, dbname: str, body: ExplainRequest, request: Request):
     """Plan de ejecución de una consulta, estimado o real.
 
-    PostgreSQL: ``EXPLAIN`` (estimado) / ``EXPLAIN (ANALYZE, BUFFERS)`` (real),
-    siempre dentro de una transacción READ ONLY.
+    PostgreSQL: ``EXPLAIN`` (estimado) / ``EXPLAIN (ANALYZE, BUFFERS)`` (real).
     SQL Server: ``SET SHOWPLAN_ALL ON`` (estimado: compila pero no ejecuta) /
-    ``SET STATISTICS PROFILE ON`` (real). En ambos motores se aplican las
-    mismas restricciones de solo lectura que en el editor de consultas.
+    ``SET STATISTICS PROFILE ON`` (real). Se aplican las mismas restricciones
+    de escritura que en el editor.
+
+    Pedir el plan nunca debe alterar datos: si la sentencia es de escritura
+    (permitida por `allow_writes`), el plan se calcula dentro de una
+    transacción que SIEMPRE termina en rollback. Es importante porque
+    ``EXPLAIN ANALYZE UPDATE …`` ejecuta el UPDATE de verdad.
     """
     store = request.app.state.profiles
     profile = store.get(profile_id)
     if profile is None:
         return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
-    sql_text = body.sql.strip().rstrip(";")
-    if not sql_text:
+    # Un plan describe UNA sentencia: si el script trae varias se explica la
+    # primera. El editor manda solo la selección cuando la hay.
+    statements = split_statements(body.sql)
+    if not statements:
         return _error(422, ApiError(code="VALIDATION", message="Consulta vacía."))
+    sql_text = statements[0]
     mode = body.mode if body.mode in ("estimated", "actual") else "estimated"
     timeout = max(1000, min(body.timeout_ms, 60000))
     is_mssql = profile.engine == Engine.sqlserver
-    if is_mssql and _first_keyword(sql_text) not in ("SELECT", "WITH"):
-        return _error(400, ApiError(
-            code="SQL_ERROR",
-            message="Sentencia no permitida en el editor.",
-            hint="Solo se permiten consultas de lectura (SELECT, WITH…).",
-        ))
+    is_read = is_read_statement(sql_text)
+    if not profile.allow_writes and not is_read:
+        return _read_only_error()
     try:
         import time
         t0 = time.perf_counter()
@@ -585,8 +693,12 @@ def explain_query(profile_id: str, dbname: str, body: ExplainRequest, request: R
             if is_mssql:
                 nodes = _mssql_plan(conn, sql_text, mode)
             else:
-                conn.read_only = True
+                # Una escritura no cabe en una transacción READ ONLY ni
+                # siquiera para planificarla, así que va en una normal.
+                conn.read_only = is_read
                 nodes = _postgres_plan(conn, sql_text, mode, timeout)
+            if not is_read:
+                conn.rollback()  # el plan nunca deja cambios en la base
         elapsed = int((time.perf_counter() - t0) * 1000)
         return {
             "ok": True,
