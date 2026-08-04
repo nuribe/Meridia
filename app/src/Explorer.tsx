@@ -512,6 +512,31 @@ function CopyButton({
   );
 }
 
+/** Indica cómo se detectó el uso de la tabla; sólo se muestra si no es directo. */
+function MatchBadge({ kind }: { kind?: string }) {
+  if (kind === "search_path") {
+    return (
+      <span
+        className="badge text-bg-light border fw-normal ms-2"
+        title="Referencia sin calificar; resuelta a esta tabla por el search_path de la rutina"
+      >
+        sin calificar
+      </span>
+    );
+  }
+  if (kind === "dinamico") {
+    return (
+      <span
+        className="badge text-bg-warning-subtle border fw-normal ms-2"
+        title="Sólo aparece dentro de SQL dinámico (EXECUTE): uso probable, no verificable"
+      >
+        probable · SQL dinámico
+      </span>
+    );
+  }
+  return null;
+}
+
 function TableDetailView({
   profileId,
   dbname,
@@ -778,7 +803,10 @@ function TableDetailView({
                         </span>
                       </td>
                       <td>
-                        <div className="fw-semibold">{r.name}</div>
+                        <div className="fw-semibold">
+                          {r.name}
+                          <MatchBadge kind={r.match_kind} />
+                        </div>
                         <small className="text-body-secondary font-monospace">
                           {r.schema_name}.{r.name}
                         </small>
@@ -842,7 +870,10 @@ function TableDetailView({
           </div>
           <div className="card-footer py-1">
             <small className="text-body-secondary">
-              Detección por análisis del código fuente de cada rutina; puede incluir coincidencias por nombre.
+              Detección sobre el código de cada rutina, ignorando comentarios y literales. Los
+              nombres sin calificar se resuelven con el <code>search_path</code> de la rutina, así
+              que las tablas homónimas de otros esquemas no se cuentan. El SQL dinámico
+              (<code>EXECUTE</code>) sólo puede marcarse como probable.
             </small>
           </div>
         </div>

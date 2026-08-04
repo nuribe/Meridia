@@ -190,6 +190,12 @@ class Routine(BaseModel):
     language: str
     args: str = ""
     body: str = Field(default="", exclude=True)  # solo para matching interno
+    # Valor de `SET search_path` fijado en la propia rutina (vacío si no tiene).
+    # Necesario para resolver referencias sin calificar; no se serializa.
+    search_path: str = Field(default="", exclude=True)
+    # Cómo se detectó el uso de la tabla consultada. Lo rellena `routines_using`;
+    # vacío en el snapshot. Valores: "calificada" | "search_path" | "dinamico".
+    match_kind: str = ""
 
 
 class Snapshot(BaseModel):

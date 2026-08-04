@@ -119,6 +119,8 @@ export interface RoutineInfo {
   kind: string; // "function" | "procedure"
   language: string;
   args: string;
+  /** Cómo se detectó el uso: "calificada" | "search_path" | "dinamico". */
+  match_kind: string;
 }
 
 export interface TableDetail {

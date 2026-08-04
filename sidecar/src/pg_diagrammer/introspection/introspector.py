@@ -191,17 +191,21 @@ def assemble(
             SchemaInfo(name=name, comment=comment, table_count=t_count, view_count=v_count)
         )
 
-    routines = [
-        Routine(
-            schema_name=schema,
-            name=name,
-            kind="procedure" if prokind == "p" else "function",
-            language=lang,
-            args=args or "",
-            body=body or "",
+    routines = []
+    for row in routine_rows or []:
+        # La 7ª columna (proconfig) sólo la aporta PostgreSQL; SQL Server envía 6.
+        schema, name, prokind, lang, args, body = row[:6]
+        routines.append(
+            Routine(
+                schema_name=schema,
+                name=name,
+                kind="procedure" if prokind == "p" else "function",
+                language=lang,
+                args=args or "",
+                body=body or "",
+                search_path=_search_path_of(row[6] if len(row) > 6 else None),
+            )
         )
-        for schema, name, prokind, lang, args, body in (routine_rows or [])
-    ]
 
     view_usage: dict[str, list[str]] = {}
     for view_schema, view_name, table_schema, table_name in view_rows or []:
@@ -235,23 +239,111 @@ def derive_cardinality(table: Table, fk: ForeignKey) -> Cardinality:
     return Cardinality.many_to_one
 
 
-def routines_using(snapshot: Snapshot, key: str) -> list[Routine]:
-    """Rutinas cuyo cuerpo referencia la tabla (por "schema.tabla" o nombre suelto).
+# --- detección de rutinas que usan una tabla --------------------------------
 
-    Matching textual sobre el fuente: cubre SQL y PL/pgSQL. Puede dar algún
-    falso positivo con nombres muy genéricos, pero no falsos negativos
-    razonables (mismo enfoque que las vistas de dependientes de pgAdmin).
+_COMMENTS = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
+_DOLLAR_QUOTED = re.compile(r"\$(?P<tag>[A-Za-z_]\w*|)\$.*?\$(?P=tag)\$", re.S)
+_SINGLE_QUOTED = re.compile(r"'(?:[^']|'')*'", re.S)
+
+# Palabras clave tras las que un identificador es, con seguridad, una relación.
+# Exigirlas descarta variables, parámetros y textos sueltos con el mismo nombre.
+_REL_CONTEXT = r"from|join|into|update|delete\s+from|truncate|table|using|references"
+
+
+def _strip_noise(src: str) -> str:
+    """Quita comentarios, literales y bloques $$...$$ (SQL dinámico).
+
+    Es de donde salían casi todos los falsos positivos: un RAISE NOTICE 'aviso…'
+    o un `-- aviso` contaban como uso de la tabla.
+    """
+    s = _COMMENTS.sub(" ", src)
+    s = _DOLLAR_QUOTED.sub(" ", s)
+    return _SINGLE_QUOTED.sub(" ", s)
+
+
+def _search_path_of(proconfig: list[str] | None) -> str:
+    """Extrae el valor de `SET search_path` de pg_proc.proconfig."""
+    for entry in proconfig or []:
+        if entry.startswith("search_path="):
+            return entry.split("=", 1)[1]
+    return ""
+
+
+def _path_schemas(routine: Routine) -> list[str]:
+    """Esquemas donde se resuelve un nombre sin calificar, en orden de prioridad.
+
+    Sin `SET search_path` en la rutina asumimos su propio esquema y luego public:
+    es lo que hace el código de aplicación en bases multi-esquema, y es lo que
+    evita atribuir un `INSERT INTO aviso` de incidencia.* a rrhh.aviso.
+    """
+    if routine.search_path:
+        out = [
+            p
+            for p in (x.strip().strip('"') for x in routine.search_path.split(","))
+            if p and not p.startswith("$") and not p.startswith("pg_")
+        ]
+        if out:
+            return out
+    return [routine.schema_name, "public"]
+
+
+def _bare_resolves_to(
+    routine: Routine, target_schema: str, table: str, owners: set[str], snapshot: Snapshot
+) -> bool:
+    """¿Un `table` sin calificar dentro de `routine` apunta a `target_schema`?"""
+    if len(owners) == 1:
+        return target_schema in owners  # nombre único en la BD: no hay ambigüedad
+    for sch in _path_schemas(routine):
+        if f"{sch}.{table}" in snapshot.tables:
+            return sch == target_schema  # gana el primer esquema del search_path
+    return False
+
+
+def routines_using(snapshot: Snapshot, key: str) -> list[Routine]:
+    """Rutinas cuyo cuerpo referencia realmente la tabla `key`.
+
+    Reglas, de mayor a menor fiabilidad (se anotan en `match_kind`):
+
+    1. "calificada"  — aparece `esquema.tabla` en el código efectivo.
+    2. "search_path" — aparece `tabla` sin calificar, en posición de relación
+       (tras FROM/JOIN/INTO/UPDATE/…) y resolviendo a `esquema` según el
+       search_path de la rutina.
+    3. "dinamico"    — `esquema.tabla` sólo aparece dentro de un literal o de
+       un bloque $$…$$, es decir SQL dinámico. Es un uso probable, no seguro.
+
+    Antes de aplicarlas se eliminan comentarios, literales y $$…$$, que eran la
+    fuente principal de falsos positivos.
     """
     schema, _, table = key.partition(".")
+    t = re.escape(table)
     qualified = re.compile(
-        rf'(?<![\w."]){re.escape(schema)}\s*\.\s*"?{re.escape(table)}"?(?![\w"])',
-        re.IGNORECASE,
+        rf'(?<![\w."]){re.escape(schema)}\s*\.\s*"?{t}"?(?![\w"])', re.IGNORECASE
     )
-    bare = re.compile(rf'(?<![\w."]){re.escape(table)}(?![\w"])', re.IGNORECASE)
-    return [
-        r for r in snapshot.routines
-        if qualified.search(r.body) or bare.search(r.body)
-    ]
+    bare = re.compile(
+        rf'(?<![\w.])(?:{_REL_CONTEXT})\s+(?:only\s+)?"?{t}"?(?![\w"(])', re.IGNORECASE
+    )
+
+    # Esquemas que tienen una relación con ese nombre: si sólo hay uno, cualquier
+    # referencia suelta es inequívoca.
+    owners = {
+        k.split(".", 1)[0]
+        for k in snapshot.tables
+        if k.split(".", 1)[1].lower() == table.lower()
+    }
+
+    found: list[Routine] = []
+    for r in snapshot.routines:
+        clean = _strip_noise(r.body)
+        if qualified.search(clean):
+            kind = "calificada"
+        elif bare.search(clean) and _bare_resolves_to(r, schema, table, owners, snapshot):
+            kind = "search_path"
+        elif qualified.search(_COMMENTS.sub(" ", r.body)):
+            kind = "dinamico"
+        else:
+            continue
+        found.append(r.model_copy(update={"match_kind": kind}))
+    return found
 
 
 def diff_snapshots(old: Snapshot | None, new: Snapshot) -> dict:
