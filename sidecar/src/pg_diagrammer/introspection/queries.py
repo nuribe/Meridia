@@ -80,7 +80,8 @@ ROUTINES = f"""
 SELECT n.nspname, p.proname, p.prokind,
        l.lanname,
        pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
-       p.prosrc
+       p.prosrc,
+       p.proconfig
 FROM pg_catalog.pg_proc p
 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 JOIN pg_catalog.pg_language l ON l.oid = p.prolang

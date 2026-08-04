@@ -162,3 +162,101 @@ def test_rutinas_que_usan_tabla_sin_calificar():
 def test_body_excluido_de_la_serializacion():
     s = snap_con_rutinas()
     assert "SELECT sum" not in s.routines[0].model_dump_json()
+
+
+# --- regresión: tabla homónima en varios esquemas (caso real rrhh.aviso) -----
+# Las rutinas llevan 7ª columna (proconfig), como la query ROUTINES de Postgres.
+
+AMB_SCHEMAS = [("rrhh", None), ("incidencia", None), ("patrimonio", None)]
+
+AMB_RELATIONS = [
+    (200, "rrhh", "aviso", "r", 82446, None, None),
+    (201, "incidencia", "aviso", "r", 100, None, None),
+    (202, "rrhh", "zona", "r", 5, None, None),
+]
+
+AMB_COLUMNS = [
+    (200, 1, "idaviso", "bigint", False, None, None),
+    (201, 1, "idaviso", "bigint", False, None, None),
+    (202, 1, "id", "bigint", False, None, None),
+]
+
+AMB_ROUTINES = [
+    # (1) usa la tabla homónima de OTRO esquema, sin calificar
+    ("incidencia", "add_noticias", "f", "plpgsql", "p_txt text",
+     "BEGIN INSERT INTO aviso (mensaje) VALUES (p_txt); END;", None),
+    # (2) la palabra sólo aparece en un literal
+    ("patrimonio", "verif_componentes_fuera_epigrafe", "f", "plpgsql", "p_id bigint",
+     "BEGIN RAISE NOTICE 'aviso: componente % fuera de epigrafe', p_id; END;", None),
+    # (3) la palabra sólo aparece en un comentario
+    ("padron", "del_zona", "f", "plpgsql", "p_id bigint",
+     "BEGIN -- borra la zona, no toca aviso\n DELETE FROM zona WHERE id=p_id; END;", None),
+    # (4) el nombre del esquema termina en 'rrhh' pero no es rrhh
+    ("migracion_rrhh", "add_aviso", "f", "plpgsql", "p_txt text",
+     "BEGIN INSERT INTO migracion_rrhh.aviso (mensaje) VALUES (p_txt); END;", None),
+    # (5) usa la columna idaviso, no la tabla
+    ("eadmin", "upd_notmensaje", "f", "plpgsql", "p_id bigint",
+     "BEGIN UPDATE eadmin.nota SET visto = true WHERE idaviso = p_id; END;", None),
+    # (6) verdadero positivo: referencia calificada
+    ("rrhh", "add_aviso", "f", "plpgsql", "p_txt text",
+     "BEGIN INSERT INTO rrhh.aviso (mensaje) VALUES (p_txt); END;", None),
+    # (7) verdadero positivo: sin calificar, dentro del propio esquema rrhh
+    ("rrhh", "purga_avisos", "p", "plpgsql", "",
+     "BEGIN DELETE FROM aviso WHERE fecha < now() - interval '1 year'; END;", None),
+    # (8) verdadero positivo: sin calificar, con SET search_path explícito
+    ("util", "cuenta_avisos", "f", "plpgsql", "",
+     "BEGIN RETURN (SELECT count(*) FROM aviso); END;", ["search_path=rrhh, public"]),
+    # (9) uso probable: sólo dentro de SQL dinámico
+    ("util", "vacia_tabla", "p", "plpgsql", "",
+     "BEGIN EXECUTE 'TRUNCATE rrhh.aviso'; END;", None),
+]
+
+
+def snap_ambiguo():
+    return assemble("demo", AMB_SCHEMAS, AMB_RELATIONS, AMB_COLUMNS, [], [], AMB_ROUTINES)
+
+
+def usos_de_aviso():
+    from pg_diagrammer.introspection.introspector import routines_using
+    return routines_using(snap_ambiguo(), "rrhh.aviso")
+
+
+def test_sin_falsos_positivos_por_homonimia_literales_y_comentarios():
+    assert [r.name for r in usos_de_aviso()] == [
+        "add_aviso", "purga_avisos", "cuenta_avisos", "vacia_tabla",
+    ]
+
+
+def test_nombre_suelto_de_otro_esquema_no_cuenta():
+    """incidencia.add_noticias hace INSERT INTO aviso -> es incidencia.aviso."""
+    assert "add_noticias" not in [r.name for r in usos_de_aviso()]
+
+
+def test_literal_y_comentario_no_cuentan():
+    nombres = [r.name for r in usos_de_aviso()]
+    assert "verif_componentes_fuera_epigrafe" not in nombres  # RAISE NOTICE 'aviso…'
+    assert "del_zona" not in nombres                           # -- … aviso
+
+
+def test_columna_idaviso_no_cuenta():
+    assert "upd_notmensaje" not in [r.name for r in usos_de_aviso()]
+
+
+def test_prefijo_de_esquema_no_cuenta():
+    """migracion_rrhh.aviso no es rrhh.aviso."""
+    assert [r.schema_name for r in usos_de_aviso()].count("migracion_rrhh") == 0
+
+
+def test_match_kind_anotado():
+    por_nombre = {r.name: r.match_kind for r in usos_de_aviso()}
+    assert por_nombre["add_aviso"] == "calificada"
+    assert por_nombre["purga_avisos"] == "search_path"
+    assert por_nombre["cuenta_avisos"] == "search_path"
+    assert por_nombre["vacia_tabla"] == "dinamico"
+
+
+def test_tabla_con_nombre_unico_se_detecta_desde_cualquier_esquema():
+    """Si sólo un esquema tiene la tabla, un nombre suelto es inequívoco."""
+    from pg_diagrammer.introspection.introspector import routines_using
+    usos = routines_using(snap_ambiguo(), "rrhh.zona")
+    assert [r.name for r in usos] == ["del_zona"]

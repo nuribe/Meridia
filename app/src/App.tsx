@@ -75,6 +75,7 @@ export default function App() {
             <Explorer
               profileId={view.profile.id}
               engine={view.profile.engine ?? "postgresql"}
+              allowWrites={view.profile.allow_writes ?? false}
               dbname={view.dbname}
               onBack={() => setView({ name: "databases", profile: view.profile })}
               onOpenDiagram={() => setView({ ...view, mode: "diagram" })}
@@ -110,6 +111,7 @@ function ProfilesScreen({
     name: "", host: "localhost", port: 5432, user: "postgres", password: "",
     ssl_mode: "prefer", dbname: "postgres",
     engine: "postgresql" as DbEngine, auth_method: "sql" as AuthMethod,
+    allow_writes: false,
   };
   // Defaults sugeridos al cambiar de motor en el formulario.
   const engineDefaults: Record<DbEngine, { port: number; user: string; dbname: string }> = {
@@ -155,6 +157,7 @@ function ProfilesScreen({
       name: p.name, host: p.host, port: p.port, user: p.user, password: "",
       ssl_mode: p.ssl_mode, dbname: p.dbname,
       engine: p.engine ?? "postgresql", auth_method: p.auth_method ?? "sql",
+      allow_writes: p.allow_writes ?? false,
     });
     setError("");
     setShowForm(true);
@@ -254,6 +257,12 @@ function ProfilesScreen({
                     onClick={() => onOpen(p)}
                   >
                     <span className="fw-semibold">{p.engine === "sqlserver" ? "🗄️" : "🐘"} {p.name}</span>{" "}
+                    {p.allow_writes && (
+                      <span className="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-normal me-1"
+                            title="El editor de consultas puede ejecutar DDL/DML en esta conexión">
+                        escritura
+                      </span>
+                    )}
                     <small className="text-body-secondary">
                       {p.engine === "sqlserver"
                         ? `${p.auth_method === "windows" ? (p.user || "Windows") : p.user}@${p.host}:${p.port}/${p.dbname} · SQL Server`
@@ -356,6 +365,26 @@ function ProfilesScreen({
                       <>Base a la que conectar. Con <strong>pgbouncer</strong> u otro pooler, indica una
                       base que exista en su pool. Desde ella se listan las demás del servidor.</>
                     )}
+                  </div>
+                </div>
+                <div className="col-12">
+                  <div className="form-check">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      id="allow-writes"
+                      checked={form.allow_writes}
+                      onChange={(e) => setForm({ ...form, allow_writes: e.target.checked })}
+                    />
+                    <label className="form-check-label" htmlFor="allow-writes">
+                      Permitir escritura desde el editor de consultas
+                    </label>
+                  </div>
+                  <div className="form-text">
+                    Apagado, la conexión es un visor: solo <code>SELECT</code> y similares.
+                    Encendido, el editor acepta cualquier sentencia, incluidas
+                    <code>UPDATE</code>, <code>DELETE</code> y DDL. Un <code>UPDATE</code> o
+                    <code>DELETE</code> sin <code>WHERE</code> pedirá confirmación.
                   </div>
                 </div>
               </div>

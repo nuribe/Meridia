@@ -76,6 +76,7 @@ class ProfileStore:
             credential_ref=f"{KEYRING_SERVICE}:{profile_id}",
             engine=data.engine,
             auth_method=data.auth_method,
+            allow_writes=data.allow_writes,
         )
         self._set_password(profile_id, data.password)
         self._profiles[profile_id] = profile
@@ -98,6 +99,7 @@ class ProfileStore:
             credential_ref=existing.credential_ref,
             engine=data.engine,
             auth_method=data.auth_method,
+            allow_writes=data.allow_writes,
         )
         if data.password:
             self._set_password(profile_id, data.password)

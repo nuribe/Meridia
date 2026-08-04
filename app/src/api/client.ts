@@ -32,6 +32,8 @@ export interface Profile {
   dbname: string;
   engine: DbEngine;
   auth_method: AuthMethod;
+  /** Permite DDL/DML desde el editor. Apagado = la conexión es un visor. */
+  allow_writes: boolean;
 }
 
 export interface ProfileInput {
@@ -44,6 +46,31 @@ export interface ProfileInput {
   ssl_mode?: string;
   engine?: DbEngine;
   auth_method?: AuthMethod;
+  allow_writes?: boolean;
+}
+
+/** Resultado de UNA sentencia del script. */
+export interface StatementResult {
+  /** La sentencia tal cual se ejecutó, para rotular su pestaña. */
+  statement: string;
+  columns: string[];
+  rows: unknown[][];
+  row_count: number;
+  /** Filas modificadas por un DML sin resultados; null cuando hubo lectura. */
+  affected_rows: number | null;
+  truncated: boolean;
+  elapsed_ms: number;
+}
+
+/** Respuesta de ejecutar un script: un bloque por sentencia. */
+export interface QueryRun {
+  ok: boolean;
+  results: StatementResult[];
+  /** Error de la sentencia que cortó la ejecución; null si fueron todas bien. */
+  error: ApiError | null;
+  /** Índice de la sentencia que falló dentro del script. */
+  error_index: number | null;
+  elapsed_ms: number;
 }
 
 export interface DatabaseInfo {
@@ -119,6 +146,8 @@ export interface RoutineInfo {
   kind: string; // "function" | "procedure"
   language: string;
   args: string;
+  /** Cómo se detectó el uso: "calificada" | "search_path" | "dinamico". */
+  match_kind: string;
 }
 
 export interface TableDetail {
@@ -335,16 +364,17 @@ export const api = {
     );
   },
 
-  runQuery: (id: string, dbname: string, sql: string, maxRows = 1000) =>
-    apiFetch<{
-      columns: string[];
-      rows: unknown[][];
-      row_count: number;
-      truncated: boolean;
-      elapsed_ms: number;
-    }>(`/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/query`, {
+  /**
+   * Ejecuta el script, sentencia a sentencia. `confirm` se reenvía a true tras
+   * aceptar el aviso de UPDATE/DELETE sin WHERE (error CONFIRM_REQUIRED).
+   *
+   * Responde 200 aunque una sentencia falle: llegan los resultados de las
+   * anteriores junto a `error` y `error_index`.
+   */
+  runQuery: (id: string, dbname: string, sql: string, maxRows = 1000, confirm = false) =>
+    apiFetch<QueryRun>(`/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/query`, {
       method: "POST",
-      body: JSON.stringify({ sql, max_rows: maxRows }),
+      body: JSON.stringify({ sql, max_rows: maxRows, confirm }),
     }),
 
   /** Plan de ejecución de una consulta: "estimated" no la ejecuta, "actual" sí. */

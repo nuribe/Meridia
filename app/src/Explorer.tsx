@@ -26,6 +26,32 @@ function errText(e: unknown): string {
   return `${err.code ?? "ERROR"}: ${err.message ?? String(e)}${err.hint ? ` — ${err.hint}` : ""}`;
 }
 
+/**
+ * Estado de escritura de la conexión, junto al nombre de la base.
+ *
+ * Se muestra siempre, también en solo lectura: saber que NO se puede escribir
+ * es tan útil como lo contrario, y su ausencia sería ambigua.
+ */
+function WriteModeBadge({ allowWrites }: { allowWrites: boolean }) {
+  // Ojo: .badge fija color:#fff, así que todo badge necesita una utilidad de
+  // color de texto explícita o queda invisible sobre fondo claro.
+  return allowWrites ? (
+    <span
+      className="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-semibold"
+      title="Esta conexión permite INSERT, UPDATE, DELETE y DDL desde el editor de consultas. Un UPDATE o DELETE sin WHERE pedirá confirmación."
+    >
+      ✎ escritura
+    </span>
+  ) : (
+    <span
+      className="badge bg-body-secondary text-body-secondary border fw-normal"
+      title="Esta conexión es un visor: solo SELECT y similares. Actívala con «Permitir escritura» al editar el perfil."
+    >
+      🔒 solo lectura
+    </span>
+  );
+}
+
 interface Detail {
   table: TableDetail;
   referenced_by: RelationshipInfo[];
@@ -60,12 +86,14 @@ interface Props {
   profileId: string;
   /** Motor del perfil: cambia el dialecto SQL del editor y el plan de ejecución. */
   engine: DbEngine;
+  /** ¿El perfil admite DDL/DML desde el editor de consultas? */
+  allowWrites: boolean;
   dbname: string;
   onBack: () => void;
   onOpenDiagram: () => void;
 }
 
-export default function Explorer({ profileId, engine, dbname, onBack, onOpenDiagram }: Props) {
+export default function Explorer({ profileId, engine, allowWrites, dbname, onBack, onOpenDiagram }: Props) {
   const [summary, setSummary] = useState<IntrospectSummary | null>(null);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -221,6 +249,7 @@ export default function Explorer({ profileId, engine, dbname, onBack, onOpenDiag
         </button>
         <ModeSwitch mode="explorer" onChange={() => onOpenDiagram()} />
         <span className="fw-semibold fs-6 ms-1">🗄 {dbname}</span>
+        <WriteModeBadge allowWrites={allowWrites} />
         {summary && (
           <small className="text-body-secondary">
             {summary.schemas.length} schemas · {summary.object_count} objetos ·{" "}
@@ -372,6 +401,7 @@ export default function Explorer({ profileId, engine, dbname, onBack, onOpenDiag
                   <QueryTab
                     profileId={profileId}
                     engine={engine}
+                    allowWrites={allowWrites}
                     dbname={dbname}
                     summary={summary}
                     loadColumns={loadColumns}
@@ -510,6 +540,31 @@ function CopyButton({
       {copied ? "✓ Copiado" : "⧉ Copiar"}
     </button>
   );
+}
+
+/** Indica cómo se detectó el uso de la tabla; sólo se muestra si no es directo. */
+function MatchBadge({ kind }: { kind?: string }) {
+  if (kind === "search_path") {
+    return (
+      <span
+        className="badge text-bg-light border fw-normal ms-2"
+        title="Referencia sin calificar; resuelta a esta tabla por el search_path de la rutina"
+      >
+        sin calificar
+      </span>
+    );
+  }
+  if (kind === "dinamico") {
+    return (
+      <span
+        className="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-normal ms-2"
+        title="Sólo aparece dentro de SQL dinámico (EXECUTE): uso probable, no verificable"
+      >
+        probable · SQL dinámico
+      </span>
+    );
+  }
+  return null;
 }
 
 function TableDetailView({
@@ -707,7 +762,7 @@ function TableDetailView({
                     {r.source}
                   </a>{" "}
                   <code>({r.columns.join(", ")})</code> → <code>({r.ref_columns.join(", ")})</code>{" "}
-                  <span className="badge text-bg-info-subtle border text-dark">{r.cardinality}</span>{" "}
+                  <span className="badge bg-info-subtle border border-info-subtle text-dark">{r.cardinality}</span>{" "}
                   <small className="text-body-secondary">{r.fk_name}</small>
                 </li>
               );
@@ -778,7 +833,10 @@ function TableDetailView({
                         </span>
                       </td>
                       <td>
-                        <div className="fw-semibold">{r.name}</div>
+                        <div className="fw-semibold">
+                          {r.name}
+                          <MatchBadge kind={r.match_kind} />
+                        </div>
                         <small className="text-body-secondary font-monospace">
                           {r.schema_name}.{r.name}
                         </small>
@@ -801,7 +859,7 @@ function TableDetailView({
                                 {prm.mode && prm.mode !== "IN" && (
                                   <span className="badge text-bg-warning">{prm.mode}</span>
                                 )}
-                                <span className="badge text-bg-primary-subtle border border-primary-subtle text-dark font-monospace">
+                                <span className="badge bg-primary-subtle border border-primary-subtle text-dark font-monospace">
                                   {prm.name ?? `$${i + 1}`}
                                 </span>
                                 <code className="text-body-secondary small">{prm.type}</code>
@@ -842,7 +900,10 @@ function TableDetailView({
           </div>
           <div className="card-footer py-1">
             <small className="text-body-secondary">
-              Detección por análisis del código fuente de cada rutina; puede incluir coincidencias por nombre.
+              Detección sobre el código de cada rutina, ignorando comentarios y literales. Los
+              nombres sin calificar se resuelven con el <code>search_path</code> de la rutina, así
+              que las tablas homónimas de otros esquemas no se cuentan. El SQL dinámico
+              (<code>EXECUTE</code>) sólo puede marcarse como probable.
             </small>
           </div>
         </div>

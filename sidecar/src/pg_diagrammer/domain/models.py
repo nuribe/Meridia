@@ -71,6 +71,9 @@ class ConnectionProfile(BaseModel):
     credential_ref: str
     engine: Engine = Engine.postgresql
     auth_method: AuthMethod = AuthMethod.sql
+    # Permite ejecutar DDL/DML desde el editor de consultas. Apagado por
+    # defecto: sin él, la app se comporta como un visor de solo lectura.
+    allow_writes: bool = False
 
 
 class ProfileCreate(BaseModel):
@@ -84,6 +87,7 @@ class ProfileCreate(BaseModel):
     ssl_mode: SslMode = SslMode.prefer
     engine: Engine = Engine.postgresql
     auth_method: AuthMethod = AuthMethod.sql
+    allow_writes: bool = False
 
     @model_validator(mode="after")
     def _require_user(self):
@@ -190,6 +194,12 @@ class Routine(BaseModel):
     language: str
     args: str = ""
     body: str = Field(default="", exclude=True)  # solo para matching interno
+    # Valor de `SET search_path` fijado en la propia rutina (vacío si no tiene).
+    # Necesario para resolver referencias sin calificar; no se serializa.
+    search_path: str = Field(default="", exclude=True)
+    # Cómo se detectó el uso de la tabla consultada. Lo rellena `routines_using`;
+    # vacío en el snapshot. Valores: "calificada" | "search_path" | "dinamico".
+    match_kind: str = ""
 
 
 class Snapshot(BaseModel):
