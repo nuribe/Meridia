@@ -613,13 +613,27 @@ function TableDetailView({
   return (
     <div className="d-flex flex-column gap-3">
       <div>
-        <h4 className="mb-1">
-          {KIND_ICON[table.kind]} {table.schema_name}.{table.name}{" "}
-          <span className="badge text-bg-secondary align-middle fw-normal">{KIND_LABEL[table.kind]}</span>
-        </h4>
+        <div className="d-flex align-items-center gap-2 flex-wrap mb-1">
+          <h4 className="mb-0">
+            {KIND_ICON[table.kind]} {table.schema_name}.{table.name}{" "}
+            <span className="badge text-bg-secondary align-middle fw-normal">{KIND_LABEL[table.kind]}</span>
+          </h4>
+          {table.comment && (
+            <span
+              className="px-2 py-1 rounded"
+              style={{
+                background: "var(--bs-tertiary-bg)",
+                borderLeft: "3px solid var(--pg-accent)",
+                fontSize: 14,
+              }}
+              title="Comentario de la tabla (COMMENT ON)"
+            >
+              💬 {table.comment}
+            </span>
+          )}
+        </div>
         <div className="text-body-secondary small">
           {table.estimated_rows != null && <>~{table.estimated_rows} filas</>}
-          {table.comment && <> · {table.comment}</>}
         </div>
       </div>
 
@@ -665,6 +679,7 @@ function TableDetailView({
                 <th>Tipo</th>
                 <th>Nullable</th>
                 <th>Default</th>
+                <th>Comentario</th>
               </tr>
             </thead>
             <tbody>
@@ -680,6 +695,13 @@ function TableDetailView({
                   </td>
                   <td className="text-body-secondary text-truncate" style={{ maxWidth: 220 }}>
                     {c.default ?? ""}
+                  </td>
+                  <td
+                    className="text-body-secondary"
+                    style={{ maxWidth: 320, whiteSpace: "pre-wrap", fontSize: 12 }}
+                    title={c.comment ?? undefined}
+                  >
+                    {c.comment ?? ""}
                   </td>
                 </tr>
               ))}
