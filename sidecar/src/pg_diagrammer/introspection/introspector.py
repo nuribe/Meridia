@@ -227,6 +227,162 @@ def assemble(
     )
 
 
+def refresh_table(conninfo: str, snapshot: Snapshot, schema: str, name: str) -> Table | None:
+    """Refresh granular: re-introspecta UNA tabla y actualiza el snapshot en sitio.
+
+    Complementa (no sustituye) la introspección en bloque: evita re-leer toda la
+    base cuando el usuario sabe qué tabla cambió. Devuelve la tabla nueva, o None
+    si ya no existe (en cuyo caso también se retira del snapshot).
+    """
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(queries.RELATION_ONE, (schema, name))
+            rel = cur.fetchone()
+            if rel is None:
+                remove_table(snapshot, f"{schema}.{name}")
+                return None
+            oid = rel[0]
+            cur.execute(queries.COLUMNS_ONE, (oid,))
+            col_rows = cur.fetchall()
+            cur.execute(queries.CONSTRAINTS_ONE, (oid,))
+            con_rows = cur.fetchall()
+            cur.execute(queries.INDEXES_ONE, (oid,))
+            idx_rows = cur.fetchall()
+            ref_oids = sorted({r[4] for r in con_rows if r[1] == "f" and r[4]})
+            ref_name_rows: list[tuple] = []
+            ref_col_rows: list[tuple] = []
+            if ref_oids:
+                cur.execute(queries.REF_TABLE_NAMES, (ref_oids,))
+                ref_name_rows = cur.fetchall()
+                cur.execute(queries.REF_TABLE_COLUMNS, (ref_oids,))
+                ref_col_rows = cur.fetchall()
+    table = assemble_one(rel, col_rows, con_rows, idx_rows, ref_name_rows, ref_col_rows)
+    apply_table_refresh(snapshot, f"{schema}.{name}", table)
+    return table
+
+
+def assemble_one(
+    rel: tuple,
+    col_rows: list[tuple],
+    con_rows: list[tuple],
+    idx_rows: list[tuple],
+    ref_name_rows: list[tuple],
+    ref_col_rows: list[tuple],
+) -> Table:
+    """Ensambla una sola Table a partir de sus filas crudas (función pura).
+
+    Espeja el tramo correspondiente de `assemble()`; las referencias de las FKs
+    se resuelven con las filas auxiliares en vez del resto del snapshot, para no
+    depender de oids potencialmente obsoletos.
+    """
+    oid, schema, name, relkind, est_rows, comment, definition = rel
+    table = Table(
+        schema_name=schema,
+        name=name,
+        oid=oid,
+        kind=RELKIND_MAP.get(relkind, TableKind.table),
+        comment=comment,
+        estimated_rows=est_rows if est_rows is not None and est_rows >= 0 else None,
+        definition=definition,
+    )
+
+    attnames: dict[int, str] = {}
+    for _attrelid, attnum, attname, data_type, is_nullable, default, col_comment in col_rows:
+        attnames[attnum] = attname
+        table.columns.append(
+            Column(
+                name=attname,
+                position=attnum,
+                data_type=data_type,
+                is_nullable=is_nullable,
+                default=default,
+                comment=col_comment,
+            )
+        )
+
+    ref_names = {roid: (rschema, rname) for roid, rschema, rname in ref_name_rows}
+    ref_attnames: dict[int, dict[int, str]] = {}
+    for attrelid, attnum, attname in ref_col_rows:
+        ref_attnames.setdefault(attrelid, {})[attnum] = attname
+
+    def colnames(attnums: list[int] | None) -> list[str]:
+        return [attnames[n] for n in (attnums or []) if n in attnames]
+
+    def ref_colnames(roid: int, attnums: list[int] | None) -> list[str]:
+        mapping = ref_attnames.get(roid, {})
+        return [mapping[n] for n in (attnums or []) if n in mapping]
+
+    for conname, contype, _conrelid, conkey, confrelid, confkey, upd, dele, definition in con_rows:
+        cols = colnames(conkey)
+        if contype == "p":
+            table.pk = cols
+            pk_set = set(cols)
+            for col in table.columns:
+                if col.name in pk_set:
+                    col.is_pk = True
+        elif contype == "u":
+            table.unique_sets.append(cols)
+        elif contype == "c":
+            table.checks.append(definition)
+        elif contype == "f":
+            ref = ref_names.get(confrelid)
+            if ref is None:
+                continue
+            table.foreign_keys.append(
+                ForeignKey(
+                    name=conname,
+                    columns=cols,
+                    ref_schema=ref[0],
+                    ref_table=ref[1],
+                    ref_columns=ref_colnames(confrelid, confkey),
+                    on_update=FK_ACTION_MAP.get(upd, "NO ACTION"),
+                    on_delete=FK_ACTION_MAP.get(dele, "NO ACTION"),
+                )
+            )
+
+    for _indrelid, index_name, is_unique, method, attnums_text in idx_rows:
+        nums = [int(x) for x in str(attnums_text).split() if x.isdigit() and int(x) > 0]
+        table.indexes.append(
+            Index(
+                name=index_name,
+                columns=colnames(nums),
+                is_unique=is_unique,
+                method=method,
+            )
+        )
+    return table
+
+
+def apply_table_refresh(snapshot: Snapshot, key: str, table: Table) -> None:
+    """Sustituye la tabla en el snapshot y re-deriva sus relaciones salientes.
+
+    Las relaciones entrantes (FKs de otras tablas hacia esta) no cambian: su
+    cardinalidad se deriva de los constraints de la tabla ORIGEN, que no se tocó.
+    """
+    snapshot.tables[key] = table
+    snapshot.relationships = [r for r in snapshot.relationships if r.source != key]
+    for fk in table.foreign_keys:
+        snapshot.relationships.append(
+            Relationship(
+                source=key,
+                target=f"{fk.ref_schema}.{fk.ref_table}",
+                fk_name=fk.name,
+                columns=fk.columns,
+                ref_columns=fk.ref_columns,
+                cardinality=derive_cardinality(table, fk),
+            )
+        )
+
+
+def remove_table(snapshot: Snapshot, key: str) -> None:
+    """Retira del snapshot una tabla que ya no existe en la base."""
+    snapshot.tables.pop(key, None)
+    snapshot.relationships = [
+        r for r in snapshot.relationships if r.source != key and r.target != key
+    ]
+    snapshot.view_usage.pop(key, None)
+
+
 def derive_cardinality(table: Table, fk: ForeignKey) -> Cardinality:
     """FK cuyas columnas coinciden exactamente con la PK o un UNIQUE propio → 1:1.
     En cualquier otro caso → N:1 (muchas filas origen por fila destino)."""

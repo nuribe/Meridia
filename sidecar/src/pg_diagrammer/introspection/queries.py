@@ -75,6 +75,74 @@ WHERE {SCHEMA_FILTER}
 ORDER BY i.indrelid, ic.relname
 """
 
+# --- Variantes por tabla, para el refresh granular (menú «Actualizar») ---
+# Mismas columnas que sus equivalentes en bloque; el filtro es por objeto.
+
+RELATION_ONE = """
+SELECT c.oid, n.nspname, c.relname, c.relkind,
+       c.reltuples::bigint AS estimated_rows,
+       pg_catalog.obj_description(c.oid, 'pg_class') AS comment,
+       CASE WHEN c.relkind IN ('v', 'm')
+            THEN pg_catalog.pg_get_viewdef(c.oid, true)
+       END AS definition
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND n.nspname = %s AND c.relname = %s
+"""
+
+COLUMNS_ONE = """
+SELECT a.attrelid, a.attnum, a.attname,
+       pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+       NOT a.attnotnull AS is_nullable,
+       pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS default_expr,
+       pg_catalog.col_description(a.attrelid, a.attnum) AS comment
+FROM pg_catalog.pg_attribute a
+LEFT JOIN pg_catalog.pg_attrdef d
+       ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+WHERE a.attrelid = %s
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+ORDER BY a.attnum
+"""
+
+CONSTRAINTS_ONE = """
+SELECT con.conname, con.contype, con.conrelid, con.conkey,
+       con.confrelid, con.confkey, con.confupdtype, con.confdeltype,
+       pg_catalog.pg_get_constraintdef(con.oid, true) AS definition
+FROM pg_catalog.pg_constraint con
+WHERE con.conrelid = %s
+  AND con.contype IN ('p', 'u', 'f', 'c')
+ORDER BY con.conname
+"""
+
+INDEXES_ONE = """
+SELECT i.indrelid, ic.relname AS index_name, i.indisunique,
+       am.amname AS method, i.indkey::text AS attnums
+FROM pg_catalog.pg_index i
+JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+JOIN pg_catalog.pg_am am ON am.oid = ic.relam
+WHERE i.indrelid = %s
+ORDER BY ic.relname
+"""
+
+# Nombres de las relaciones referenciadas por las FKs de la tabla refrescada.
+REF_TABLE_NAMES = """
+SELECT c.oid, n.nspname, c.relname
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid = ANY(%s)
+"""
+
+# Columnas (attnum → nombre) de esas relaciones referenciadas.
+REF_TABLE_COLUMNS = """
+SELECT a.attrelid, a.attnum, a.attname
+FROM pg_catalog.pg_attribute a
+WHERE a.attrelid = ANY(%s)
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+"""
+
 # Funciones y procedimientos de usuario (excluye los que pertenecen a extensiones).
 ROUTINES = f"""
 SELECT n.nspname, p.proname, p.prokind,
