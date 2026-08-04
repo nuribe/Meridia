@@ -68,6 +68,8 @@ interface Props {
   loadColumns: (schema: string, table: string) => Promise<string[]>;
   /** ¿Es la pestaña visible? Solo la activa registra su builder en el árbol. */
   active: boolean;
+  /** SQL inicial del editor (p. ej. script generado desde el modo edición). */
+  initialSql?: string;
 }
 
 /** Rótulo corto de una sub-pestaña de resultado, a partir de su sentencia. */
@@ -100,11 +102,12 @@ function cellText(v: unknown): string {
   return v === null || v === undefined ? "null" : String(v);
 }
 
-export default function QueryTab({ profileId, engine, allowWrites, dbname, summary, loadColumns, active }: Props) {
+export default function QueryTab({ profileId, engine, allowWrites, dbname, summary, loadColumns, active, initialSql }: Props) {
   const [sqlText, setSqlText] = useState(
-    allowWrites
-      ? "-- Escribe tu sentencia. Ctrl+Enter para ejecutar.\nSELECT * FROM "
-      : "-- Escribe tu consulta (solo lectura). Ctrl+Enter para ejecutar.\nSELECT * FROM "
+    initialSql ??
+      (allowWrites
+        ? "-- Escribe tu sentencia. Ctrl+Enter para ejecutar.\nSELECT * FROM "
+        : "-- Escribe tu consulta (solo lectura). Ctrl+Enter para ejecutar.\nSELECT * FROM ")
   );
   const [running, setRunning] = useState(false);
   // Un bloque por sentencia del script; la sub-pestaña activa se elige aparte.

@@ -332,6 +332,19 @@ export const api = {
       `/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`
     ),
 
+  /** Refresh granular: re-introspecta SOLO esa tabla y actualiza el snapshot. */
+  refreshTable: (id: string, dbname: string, schema: string, table: string) =>
+    apiFetch<{
+      removed: boolean;
+      table?: TableDetail;
+      referenced_by?: RelationshipInfo[];
+      routines?: RoutineInfo[];
+      views?: string[];
+    }>(
+      `/api/v1/profiles/${id}/db/${encodeURIComponent(dbname)}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/refresh`,
+      { method: "POST" }
+    ),
+
   tableData: (
     id: string,
     dbname: string,

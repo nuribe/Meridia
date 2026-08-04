@@ -15,6 +15,7 @@ import {
   type TableDetail,
 } from "./api/client";
 import ObjectTree, { KIND_ICON, KIND_LABEL } from "./ObjectTree";
+import { buildAlterScript, draftProblems, type DraftColumn } from "./ddl";
 import ModeSwitch from "./ModeSwitch";
 import ThemeMenu from "./ThemeMenu";
 import QueryTab, { copyText } from "./QueryTab";
@@ -78,6 +79,8 @@ interface QueryTabState {
   kind: "query";
   id: number;
   title: string;
+  /** SQL con el que arranca el editor (p. ej. script del modo edición). */
+  initialSql?: string;
 }
 
 type Tab = DetailTab | QueryTabState;
@@ -168,11 +171,11 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
     setActiveId(id);
   }
 
-  /** Nueva pestaña de consulta SQL. */
-  function openQueryTab() {
+  /** Nueva pestaña de consulta SQL (opcionalmente con contenido inicial). */
+  function openQueryTab(initialSql?: string) {
     const id = nextId.current++;
     const count = tabs.filter((t) => t.kind === "query").length + 1;
-    setTabs((ts) => [...ts, { kind: "query", id, title: `Consulta ${count}` }]);
+    setTabs((ts) => [...ts, { kind: "query", id, title: `Consulta ${count}`, initialSql }]);
     setActiveId(id);
   }
 
@@ -217,6 +220,39 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
       )
     );
     scrollTabTop(activeDetail.id);
+  }
+
+  /**
+   * Refresh granular desde el menú contextual del árbol: re-introspecta SOLO
+   * esa tabla (sin recargar toda la BD) y actualiza las pestañas abiertas.
+   */
+  async function refreshOneTable(schema: string, name: string) {
+    const key = `${schema}.${name}`;
+    setStatus(`Actualizando ${key}…`);
+    try {
+      const r = await api.refreshTable(profileId, dbname, schema, name);
+      if (r.removed) {
+        // La tabla ya no existe: cerrar sus pestañas y avisar.
+        tabs
+          .filter((t) => t.kind === "detail" && t.key === key)
+          .forEach((t) => closeTab(t.id));
+        setError(`${key} ya no existe en la base de datos; se quitó del snapshot.`);
+      } else if (r.table) {
+        const detail: Detail = {
+          table: r.table,
+          referenced_by: r.referenced_by ?? [],
+          routines: r.routines ?? [],
+          views: r.views ?? [],
+        };
+        setTabs((ts) =>
+          ts.map((t) => (t.kind === "detail" && t.key === key ? { ...t, detail } : t))
+        );
+      }
+      setStatus("");
+    } catch (e) {
+      setError(errText(e));
+      setStatus("");
+    }
   }
 
   /** Carga las columnas de una tabla para el autocompletado del editor SQL. */
@@ -318,6 +354,12 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
               ? (o) => builderSession.addTable(`${o.schema_name}.${o.name}`)
               : undefined
           }
+          contextMenuFor={(o) => [
+            {
+              label: `⟳ Actualizar ${o.name}`,
+              onClick: () => void refreshOneTable(o.schema_name, o.name),
+            },
+          ]}
           badges={
             diff
               ? Object.fromEntries([
@@ -372,7 +414,7 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
             <li className="nav-item align-self-center">
               <button
                 className="btn btn-sm btn-outline-primary border-0 ms-1"
-                onClick={openQueryTab}
+                onClick={() => openQueryTab()}
                 title="Nueva pestaña de consulta SQL"
               >
                 ＋ Consulta
@@ -406,6 +448,7 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
                     summary={summary}
                     loadColumns={loadColumns}
                     active={t.id === activeId}
+                    initialSql={t.initialSql}
                   />
                 </div>
               );
@@ -468,11 +511,14 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
                   key={`${t.id}:${t.key}`}
                   profileId={profileId}
                   dbname={dbname}
+                  engine={engine}
+                  allowWrites={allowWrites}
                   table={t.detail.table}
                   referencedBy={t.detail.referenced_by}
                   routines={t.detail.routines}
                   views={t.detail.views}
                   onNavigate={(sc, tb) => void navigateTo(sc, tb)}
+                  onOpenQuery={(sql) => openQueryTab(sql)}
                 />
               )}
             </div>
@@ -482,6 +528,51 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
       </div>
     </div>
     </SetBuilderSessionContext.Provider>
+  );
+}
+
+// --- Iconos de Bootstrap Icons (SVG inline, color = currentColor) ---
+
+const BI_PATHS = {
+  "pencil-square": [
+    "M15.502 1.94a.5.5 0 0 1 0 .706L14.459 3.69l-2-2L13.502.646a.5.5 0 0 1 .707 0l1.293 1.293zm-1.75 2.456-2-2L4.939 9.21a.5.5 0 0 0-.121.196l-.805 2.414a.25.25 0 0 0 .316.316l2.414-.805a.5.5 0 0 0 .196-.12l6.813-6.814z",
+    "M1 13.5A1.5 1.5 0 0 0 2.5 15h11a1.5 1.5 0 0 0 1.5-1.5v-6a.5.5 0 0 0-1 0v6a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5H9a.5.5 0 0 0 0-1H2.5A1.5 1.5 0 0 0 1 2.5z",
+  ],
+  "check-lg": [
+    "M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425z",
+  ],
+  "x-lg": [
+    "M2.146 2.854a.5.5 0 1 1 .708-.708L8 7.293l5.146-5.147a.5.5 0 0 1 .708.708L8.707 8l5.147 5.146a.5.5 0 0 1-.708.708L8 8.707l-5.146 5.147a.5.5 0 0 1-.708-.708L7.293 8z",
+  ],
+  trash: [
+    "M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z",
+    "M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z",
+  ],
+  "plus-lg": [
+    "M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2",
+  ],
+  "arrow-counterclockwise": [
+    "M8 3a5 5 0 1 1-4.546 2.914.5.5 0 0 0-.908-.417A6 6 0 1 0 8 2z",
+    "M8 4.466V.534a.25.25 0 0 0-.41-.192L5.23 2.308a.25.25 0 0 0 0 .384l2.36 1.966A.25.25 0 0 0 8 4.466",
+  ],
+} as const;
+
+/** Icono de Bootstrap Icons alineado con el texto. */
+function Bi({ name, size = 14 }: { name: keyof typeof BI_PATHS; size?: number }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      fill="currentColor"
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      style={{ verticalAlign: "-.125em" }}
+    >
+      {BI_PATHS[name].map((d, i) => (
+        <path key={i} d={d} />
+      ))}
+    </svg>
   );
 }
 
@@ -567,22 +658,34 @@ function MatchBadge({ kind }: { kind?: string }) {
   return null;
 }
 
+/** Fila del editor de columnas: borrador + clave estable para React. */
+interface EditRow extends DraftColumn {
+  rk: number;
+}
+
 function TableDetailView({
   profileId,
   dbname,
+  engine,
+  allowWrites,
   table,
   referencedBy,
   routines,
   views,
   onNavigate,
+  onOpenQuery,
 }: {
   profileId: string;
   dbname: string;
+  engine: DbEngine;
+  allowWrites: boolean;
   table: TableDetail;
   referencedBy: RelationshipInfo[];
   routines: RoutineInfo[];
   views: string[];
   onNavigate: (schema: string, table: string) => void;
+  /** Abre una pestaña de consulta con el SQL dado (única vía de escritura). */
+  onOpenQuery: (sql: string) => void;
 }) {
   const [codeModal, setCodeModal] = useState<{
     title: string;
@@ -600,6 +703,70 @@ function TableDetailView({
     }
   }
   const [activeTab, setActiveTab] = useState<"meta" | "data">("meta");
+
+  // --- Modo edición: CRUD de columnas y comentarios; genera un script SQL ---
+  // que se abre en una pestaña de consulta. Nada se ejecuta desde aquí.
+  const canEdit = table.kind === "table" || table.kind === "partitioned";
+  const [editing, setEditing] = useState(false);
+  const [draftCols, setDraftCols] = useState<EditRow[]>([]);
+  const [draftComment, setDraftComment] = useState("");
+  const [sqlModal, setSqlModal] = useState<string | null>(null);
+  const rowKey = useRef(0);
+
+  function startEdit() {
+    setDraftCols(
+      table.columns.map((c) => ({
+        rk: rowKey.current++,
+        orig: c,
+        name: c.name,
+        data_type: c.data_type,
+        nullable: c.is_nullable,
+        def: c.default ?? "",
+        comment: c.comment ?? "",
+        deleted: false,
+      }))
+    );
+    setDraftComment(table.comment ?? "");
+    setEditing(true);
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+    setSqlModal(null);
+  }
+
+  function patchCol(rk: number, patch: Partial<EditRow>) {
+    setDraftCols((cs) => cs.map((c) => (c.rk === rk ? { ...c, ...patch } : c)));
+  }
+
+  function addCol() {
+    setDraftCols((cs) => [
+      ...cs,
+      {
+        rk: rowKey.current++,
+        orig: null,
+        name: "",
+        data_type: "",
+        nullable: true,
+        def: "",
+        comment: "",
+        deleted: false,
+      },
+    ]);
+  }
+
+  /** Nueva: se quita la fila; existente: se marca/desmarca para DROP. */
+  function toggleDelete(row: EditRow) {
+    if (row.orig === null) {
+      setDraftCols((cs) => cs.filter((c) => c.rk !== row.rk));
+    } else {
+      patchCol(row.rk, { deleted: !row.deleted });
+    }
+  }
+
+  const problem = editing ? draftProblems(draftCols) : null;
+  const script =
+    editing && !problem ? buildAlterScript(engine, table, draftCols, draftComment) : "";
   // Parámetros de rutinas colapsados por defecto; expansión por fila.
   const [expandedRoutines, setExpandedRoutines] = useState<Set<string>>(new Set());
   const toggleRoutine = (key: string) =>
@@ -613,13 +780,38 @@ function TableDetailView({
   return (
     <div className="d-flex flex-column gap-3">
       <div>
-        <h4 className="mb-1">
-          {KIND_ICON[table.kind]} {table.schema_name}.{table.name}{" "}
-          <span className="badge text-bg-secondary align-middle fw-normal">{KIND_LABEL[table.kind]}</span>
-        </h4>
+        <div className="d-flex align-items-center gap-2 flex-wrap mb-1">
+          <h4 className="mb-0">
+            {KIND_ICON[table.kind]} {table.schema_name}.{table.name}{" "}
+            <span className="badge text-bg-secondary align-middle fw-normal">{KIND_LABEL[table.kind]}</span>
+          </h4>
+          {editing ? (
+            <input
+              className="form-control form-control-sm"
+              style={{ maxWidth: 480, borderLeft: "3px solid var(--pg-accent)" }}
+              placeholder="Comentario de la tabla…"
+              title="Comentario de la tabla (COMMENT ON / MS_Description)"
+              value={draftComment}
+              onChange={(e) => setDraftComment(e.target.value)}
+            />
+          ) : (
+            table.comment && (
+              <span
+                className="px-2 py-1 rounded"
+                style={{
+                  background: "var(--bs-tertiary-bg)",
+                  borderLeft: "3px solid var(--pg-accent)",
+                  fontSize: 14,
+                }}
+                title="Comentario de la tabla (COMMENT ON)"
+              >
+                💬 {table.comment}
+              </span>
+            )
+          )}
+        </div>
         <div className="text-body-secondary small">
           {table.estimated_rows != null && <>~{table.estimated_rows} filas</>}
-          {table.comment && <> · {table.comment}</>}
         </div>
       </div>
 
@@ -655,7 +847,47 @@ function TableDetailView({
       {activeTab === "meta" && (
       <>
       <div className="card shadow-sm">
-        <SectionHeader icon="▦" title="Columnas" count={table.columns.length} />
+        <SectionHeader
+          icon="▦"
+          title="Columnas"
+          count={editing ? draftCols.filter((c) => !c.deleted).length : table.columns.length}
+          actions={
+            canEdit ? (
+              editing ? (
+                <>
+                  <button
+                    className="btn btn-sm btn-success py-0 px-2"
+                    disabled={!!problem || !script}
+                    onClick={() => setSqlModal(script)}
+                    title={
+                      problem ??
+                      (script
+                        ? "Ver el SQL de los cambios para aprobarlo"
+                        : "Sin cambios que guardar")
+                    }
+                  >
+                    <Bi name="check-lg" /> Guardar
+                  </button>
+                  <button
+                    className="btn btn-sm btn-light py-0 px-2"
+                    onClick={cancelEdit}
+                    title="Descartar la edición"
+                  >
+                    <Bi name="x-lg" />
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn-sm btn-warning py-0 px-2"
+                  onClick={startEdit}
+                  title="Editar columnas y comentarios (genera un script SQL; no ejecuta nada)"
+                >
+                  <Bi name="pencil-square" />
+                </button>
+              )
+            ) : undefined
+          }
+        />
         <div className="table-responsive">
           <table className="table table-sm table-hover align-middle mb-0">
             <thead className="table-light">
@@ -665,27 +897,128 @@ function TableDetailView({
                 <th>Tipo</th>
                 <th>Nullable</th>
                 <th>Default</th>
+                <th>Comentario</th>
+                {editing && <th style={{ width: 44 }}></th>}
               </tr>
             </thead>
             <tbody>
-              {table.columns.map((c) => (
-                <tr key={c.name}>
-                  <td className="text-center">{c.is_pk ? "🔑" : ""}</td>
-                  <td className={c.is_pk ? "fw-semibold" : ""}>{c.name}</td>
-                  <td><code>{c.data_type}</code></td>
-                  <td>
-                    {c.is_nullable
-                      ? <span className="badge text-bg-success">sí</span>
-                      : <span className="badge text-bg-secondary">no</span>}
-                  </td>
-                  <td className="text-body-secondary text-truncate" style={{ maxWidth: 220 }}>
-                    {c.default ?? ""}
-                  </td>
-                </tr>
-              ))}
+              {!editing &&
+                table.columns.map((c) => (
+                  <tr key={c.name}>
+                    <td className="text-center">{c.is_pk ? "🔑" : ""}</td>
+                    <td className={c.is_pk ? "fw-semibold" : ""}>{c.name}</td>
+                    <td><code>{c.data_type}</code></td>
+                    <td>
+                      {c.is_nullable
+                        ? <span className="badge text-bg-success">sí</span>
+                        : <span className="badge text-bg-secondary">no</span>}
+                    </td>
+                    <td className="text-body-secondary text-truncate" style={{ maxWidth: 220 }}>
+                      {c.default ?? ""}
+                    </td>
+                    <td
+                      className="text-body-secondary"
+                      style={{ maxWidth: 320, whiteSpace: "pre-wrap", fontSize: 12 }}
+                      title={c.comment ?? undefined}
+                    >
+                      {c.comment ?? ""}
+                    </td>
+                  </tr>
+                ))}
+              {editing &&
+                draftCols.map((c) => (
+                  <tr
+                    key={c.rk}
+                    style={c.deleted ? { opacity: 0.45, textDecoration: "line-through" } : undefined}
+                  >
+                    <td className="text-center">
+                      {c.orig?.is_pk ? "🔑" : c.orig === null ? (
+                        <span className="badge text-bg-success" title="Columna nueva">+</span>
+                      ) : ""}
+                    </td>
+                    <td>
+                      <input
+                        className="form-control form-control-sm font-monospace"
+                        style={{ minWidth: 140 }}
+                        placeholder="nombre"
+                        value={c.name}
+                        disabled={c.deleted}
+                        onChange={(e) => patchCol(c.rk, { name: e.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="form-control form-control-sm font-monospace"
+                        style={{ minWidth: 150 }}
+                        placeholder={engine === "sqlserver" ? "nvarchar(100)" : "text"}
+                        value={c.data_type}
+                        disabled={c.deleted}
+                        onChange={(e) => patchCol(c.rk, { data_type: e.target.value })}
+                      />
+                    </td>
+                    <td className="text-center">
+                      <input
+                        className="form-check-input"
+                        type="checkbox"
+                        checked={c.nullable}
+                        disabled={c.deleted}
+                        title="¿Admite NULL?"
+                        onChange={(e) => patchCol(c.rk, { nullable: e.target.checked })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="form-control form-control-sm font-monospace"
+                        style={{ minWidth: 120 }}
+                        placeholder="expresión"
+                        title="Expresión DEFAULT (vacío = sin default)"
+                        value={c.def}
+                        disabled={c.deleted}
+                        onChange={(e) => patchCol(c.rk, { def: e.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="form-control form-control-sm"
+                        style={{ minWidth: 180 }}
+                        placeholder="comentario"
+                        value={c.comment}
+                        disabled={c.deleted}
+                        onChange={(e) => patchCol(c.rk, { comment: e.target.value })}
+                      />
+                    </td>
+                    <td className="text-center">
+                      <button
+                        className={`btn btn-sm py-0 px-1 ${c.deleted ? "btn-outline-secondary" : "btn-outline-danger"}`}
+                        onClick={() => toggleDelete(c)}
+                        title={
+                          c.orig === null
+                            ? "Quitar esta columna nueva"
+                            : c.deleted
+                              ? "Restaurar la columna"
+                              : "Marcar para eliminar (DROP COLUMN)"
+                        }
+                      >
+                        <Bi name={c.deleted ? "arrow-counterclockwise" : "trash"} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </div>
+        {editing && (
+          <div className="card-footer py-2 d-flex align-items-center gap-3 flex-wrap">
+            <button className="btn btn-sm btn-outline-primary py-0 px-2" onClick={addCol}>
+              <Bi name="plus-lg" /> Añadir columna
+            </button>
+            {problem && <small className="text-danger">{problem}</small>}
+            <small className="text-body-secondary ms-auto">
+              Nada se ejecuta al editar: «Guardar» muestra el SQL y, si lo apruebas, se abre en
+              una pestaña de consulta.
+            </small>
+          </div>
+        )}
       </div>
 
       {(table.kind === "view" || table.kind === "matview") && table.definition && (
@@ -933,6 +1266,20 @@ function TableDetailView({
         />
       )}
 
+      {sqlModal !== null && (
+        <SqlChangesModal
+          title={`${table.schema_name}.${table.name}`}
+          sql={sqlModal}
+          allowWrites={allowWrites}
+          onApprove={() => {
+            onOpenQuery(sqlModal);
+            setSqlModal(null);
+            setEditing(false);
+          }}
+          onClose={() => setSqlModal(null)}
+        />
+      )}
+
       {table.checks.length > 0 && (
         <div className="card shadow-sm">
           <SectionHeader icon="✓" title="Checks" count={table.checks.length} />
@@ -947,6 +1294,119 @@ function TableDetailView({
       )}
       </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Modal con el script de cambios del modo edición.
+ *
+ * «Aprobar» NO ejecuta nada: abre el SQL en una pestaña de consulta, que es la
+ * única vía de escritura de la app (y respeta «Permitir escritura»).
+ */
+function SqlChangesModal({
+  title,
+  sql,
+  allowWrites,
+  onApprove,
+  onClose,
+}: {
+  title: string;
+  sql: string;
+  allowWrites: boolean;
+  onApprove: () => void;
+  onClose: () => void;
+}) {
+  const pal = sqlPalette();
+  const dark = THEMES.find((x) => x.id === currentTheme())?.bs === "dark";
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 1060, background: "rgba(0,0,0,.6)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        className="d-flex flex-column shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top: "10vh",
+          left: "max(2vw, calc(50vw - 440px))",
+          width: "min(880px, 94vw)",
+          maxHeight: "78vh",
+          background: "var(--bs-body-bg)",
+          border: "1px solid var(--bs-border-color)",
+          borderRadius: 10,
+          overflow: "hidden",
+        }}
+      >
+        {/* Cabecera: título + copiar (arriba a la derecha) */}
+        <div
+          className="d-flex align-items-center gap-2 px-3 py-2 flex-shrink-0"
+          style={{
+            background: "var(--pg-grad)",
+            color: "#fff",
+          }}
+        >
+          <Bi name="pencil-square" size={15} />
+          <span className="fw-semibold text-truncate" title={title}>
+            Cambios en <span className="font-monospace">{title}</span>
+          </span>
+          <span className="flex-grow-1" />
+          <CopyButton text={sql} title="Copiar todo el script" />
+          <button className="btn-close btn-close-white" onClick={onClose} title="Cerrar (Esc)" />
+        </div>
+
+        {/* Script resaltado */}
+        <div className="flex-grow-1" style={{ overflow: "auto" }}>
+          <pre
+            className="mb-0 px-3 py-2"
+            style={{
+              color: "var(--bs-body-color)",
+              fontSize: 13,
+              lineHeight: 1.6,
+              fontFamily: "Consolas, 'Cascadia Code', Menlo, monospace",
+              tabSize: 4,
+            }}
+          >
+            <code>{highlightSql(sql, pal)}</code>
+          </pre>
+        </div>
+
+        {/* Pie: aviso + acciones */}
+        <div
+          className="d-flex align-items-center gap-2 px-3 py-2 flex-shrink-0 flex-wrap"
+          style={{ background: "var(--bs-tertiary-bg)", borderTop: "1px solid var(--bs-border-color)" }}
+        >
+          <small className="text-body-secondary">
+            Al aprobar, el script se abre en una pestaña de consulta para revisarlo y ejecutarlo.
+            {!allowWrites && (
+              <>
+                {" "}
+                <span className="text-warning-emphasis fw-semibold">
+                  Este perfil es de solo lectura: activa «Permitir escritura» para poder ejecutarlo.
+                </span>
+              </>
+            )}
+          </small>
+          <span className="flex-grow-1" />
+          <button
+            className={`btn btn-sm ${dark ? "btn-outline-light" : "btn-outline-secondary"}`}
+            onClick={onClose}
+          >
+            <Bi name="x-lg" /> Cancelar
+          </button>
+          <button className="btn btn-sm btn-success" onClick={onApprove}>
+            <Bi name="check-lg" /> Aprobar
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

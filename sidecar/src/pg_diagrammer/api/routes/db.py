@@ -216,6 +216,52 @@ def table_detail(profile_id: str, dbname: str, schema: str, table: str, request:
     }
 
 
+@router.post("/profiles/{profile_id}/db/{dbname}/tables/{schema}/{table}/refresh")
+def refresh_table(profile_id: str, dbname: str, schema: str, table: str, request: Request):
+    """Refresh granular de una tabla (menú «Actualizar» del árbol).
+
+    PostgreSQL: re-introspecta solo esa tabla y actualiza el snapshot en caché.
+    SQL Server: de momento re-introspecta la base completa (mismo resultado,
+    más lento) — el snapshot queda igual de fresco.
+    """
+    store = request.app.state.profiles
+    profile = store.get(profile_id)
+    if profile is None:
+        return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
+    snapshot, err = _snapshot(request, profile_id, dbname)
+    if err:
+        return err
+    key = f"{schema}.{table}"
+    try:
+        if profile.engine == Engine.sqlserver:
+            snapshot, err = _snapshot(request, profile_id, dbname, force=True)
+            if err:
+                return err
+            found = snapshot.tables.get(key)
+        else:
+            conninfo = store.conninfo(profile, dbname)
+            found = introspector.refresh_table(conninfo, snapshot, schema, table)
+    except PasswordUnavailable:
+        return password_missing_error(profile_id)
+    except DB_EXCEPTIONS as exc:
+        return _error(400, classify_db_error(profile.engine, exc))
+    if found is None:
+        return {"ok": True, "removed": True}
+    referenced_by = [
+        r.model_dump()
+        for r in snapshot.relationships
+        if r.target == key and r.source != key
+    ]
+    return {
+        "ok": True,
+        "removed": False,
+        "table": found.model_dump(),
+        "referenced_by": referenced_by,
+        "routines": [r.model_dump() for r in routines_using(snapshot, key)],
+        "views": snapshot.view_usage.get(key, []),
+    }
+
+
 @router.get("/profiles/{profile_id}/db/{dbname}/tables/{schema}/{table}/related")
 def related_tables(
     profile_id: str,
