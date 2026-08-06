@@ -8,8 +8,9 @@
  *   anima el flujo desde la tabla origen (FK) hacia la destino.
  * - Clic en una COLUMNA: traza todas las relaciones en las que participa,
  *   marca las tablas destino y ofrece un panel para saltar a ellas.
- * - Los conectores se reparten por todo el contorno del nodo (handleSlots.ts):
- *   una tabla con muchas relaciones ya no las concentra en un solo punto.
+ * - Los conectores se reparten por todo el contorno del nodo (edgeRouting.ts):
+ *   una tabla con muchas relaciones ya no las concentra en un solo punto, y el
+ *   punto de enganche se desliza al arrastrar en vez de saltar.
  * - ⇲ en un nodo añade todas sus tablas relacionadas.
  * - Sticky notes redimensionables y con colores.
  */
@@ -48,15 +49,9 @@ import {
   type TableDetail,
 } from "./api/client";
 import TableNode, { type NodeCustom } from "./TableNode";
-import {
-  CENTER_SLOT,
-  HandleUsageContext,
-  handleId,
-  spreadSlots,
-  type HandleRole,
-  type HandleUsage,
-  type Side,
-} from "./handleSlots";
+import { AnchorUsageContext, handleId } from "./anchors";
+import { routeConns, type Rect } from "./edgeRouting";
+import RelEdge from "./RelEdge";
 import SelfLoopEdge from "./SelfLoopEdge";
 import NoteNode, { NOTE_PALETTE } from "./NoteNode";
 import ObjectTree, { DND_MIME } from "./ObjectTree";
@@ -65,7 +60,7 @@ import ThemeMenu from "./ThemeMenu";
 import { openTextFile, saveFile, saveTextFile, pickDirectory } from "./files";
 
 const nodeTypes = { table: TableNode, note: NoteNode };
-const edgeTypes = { selfloop: SelfLoopEdge };
+const edgeTypes = { selfloop: SelfLoopEdge, rel: RelEdge };
 
 const FLOW_CSS = `
 .react-flow__edge.pgdiag-flow .react-flow__edge-path {
@@ -121,92 +116,10 @@ interface Conn {
   join?: ViewJoin;
 }
 
-type Pt = { x: number; y: number };
-
 /** Columnas que la conexión toca en cada extremo. */
 function connColumns(c: Conn): { source: string[]; target: string[] } {
   if (c.rel) return { source: c.rel.columns, target: c.rel.ref_columns };
   return { source: c.join?.source_columns ?? [], target: c.join?.target_columns ?? [] };
-}
-
-/** Clave de orden dentro de un lado: coordenada del otro extremo. */
-function perpKey(side: Side, other: Pt): number {
-  return side === "left" || side === "right" ? other.y : other.x;
-}
-
-/**
- * Decide, para cada conexión, por qué lado sale/entra y en qué slot de ese lado.
- *
- * 1. El lado se elige por posición relativa de los centros (como antes).
- * 2. Las conexiones que comparten `nodo + lado` se ordenan por la coordenada
- *    del extremo opuesto y se reparten por el contorno de ese lado. Ordenarlas
- *    así evita que las aristas se crucen entre sí al abrirse en abanico.
- *
- * Devuelve también qué handles quedan ocupados por nodo, para que TableNode
- * dibuje solo esos puntos.
- */
-function computeHandles(conns: Conn[], centers: Record<string, Pt>) {
-  const assign: Record<string, { sourceHandle: string; targetHandle: string }> = {};
-  const buckets = new Map<string, { connId: string; role: HandleRole; side: Side; key: number }[]>();
-  const FAR = 1e9; // los lazos reflexivos van al final de su lado
-
-  const put = (node: string, e: { connId: string; role: HandleRole; side: Side; key: number }) => {
-    const k = `${node}|${e.side}`;
-    const arr = buckets.get(k);
-    if (arr) arr.push(e);
-    else buckets.set(k, [e]);
-  };
-
-  for (const c of conns) {
-    const sc = centers[c.source] ?? { x: 0, y: 0 };
-    const tc = centers[c.target] ?? { x: 0, y: 0 };
-    const selfRef = c.source === c.target;
-    let sSide: Side;
-    let tSide: Side;
-    if (selfRef) {
-      // Lazo visible: sale por la derecha y vuelve por arriba. Los extremos se
-      // llevan a la esquina superior derecha (clave -FAR arriba del lado
-      // derecho, +FAR al final del lado superior) para que el lazo quede
-      // compacto y fuera del nodo, no escondido pegado al borde.
-      sSide = "right";
-      tSide = "top";
-    } else {
-      const dx = tc.x - sc.x;
-      const dy = tc.y - sc.y;
-      if (Math.abs(dy) > Math.abs(dx) * 1.15) {
-        // Separación predominantemente vertical: conectar arriba/abajo
-        sSide = dy > 0 ? "bottom" : "top";
-        tSide = dy > 0 ? "top" : "bottom";
-      } else {
-        sSide = dx >= 0 ? "right" : "left";
-        tSide = dx >= 0 ? "left" : "right";
-      }
-    }
-    // Valor por defecto (slot central) por si el bucket no llegara a resolverse.
-    assign[c.id] = {
-      sourceHandle: handleId("s", sSide, CENTER_SLOT),
-      targetHandle: handleId("t", tSide, CENTER_SLOT),
-    };
-    put(c.source, { connId: c.id, role: "s", side: sSide, key: selfRef ? -FAR : perpKey(sSide, tc) });
-    put(c.target, { connId: c.id, role: "t", side: tSide, key: selfRef ? FAR : perpKey(tSide, sc) });
-  }
-
-  const usage: HandleUsage = {};
-  for (const [k, arr] of buckets) {
-    const node = k.slice(0, k.lastIndexOf("|"));
-    arr.sort((a, b) => a.key - b.key || a.connId.localeCompare(b.connId));
-    const slots = spreadSlots(arr.length);
-    arr.forEach((e, i) => {
-      const id = handleId(e.role, e.side, slots[i]);
-      if (e.role === "s") assign[e.connId].sourceHandle = id;
-      else assign[e.connId].targetHandle = id;
-      const list = usage[node];
-      if (list) list.push(id);
-      else usage[node] = [id];
-    });
-  }
-  for (const node of Object.keys(usage)) usage[node] = [...new Set(usage[node])].sort();
-  return { assign, usage };
 }
 
 const EXPORT_FILTER = (el: HTMLElement) => {
@@ -327,14 +240,17 @@ function DiagramCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableKeysStr, profileId, dbname]);
 
-  // Centro de cada nodo, para que cada arista salga por el lado más cercano
-  const centers = useMemo(() => {
-    const m: Record<string, { x: number; y: number }> = {};
+  // Caja de cada nodo. No basta el centro: para saber si dos tablas se miran de
+  // frente (y por tanto si cabe una arista recta) hacen falta alto y ancho.
+  const rects = useMemo(() => {
+    const m: Record<string, Rect> = {};
     for (const n of nodes) {
       if (n.type === "table") {
         m[n.id] = {
-          x: n.position.x + (n.measured?.width ?? 230) / 2,
-          y: n.position.y + (n.measured?.height ?? 150) / 2,
+          x: n.position.x,
+          y: n.position.y,
+          w: n.measured?.width ?? 230,
+          h: n.measured?.height ?? 150,
         };
       }
     }
@@ -358,23 +274,9 @@ function DiagramCanvas({
     return out;
   }, [rels, viewJoins, present]);
 
-  // Lado + slot de cada extremo. Se recalcula al mover las tablas: la relación
-  // "se mueve" con ellas y el reparto por el contorno se reordena solo.
-  const handles = useMemo(() => computeHandles(conns, centers), [conns, centers]);
-
-  // El mapa de handles ocupados viaja por contexto hasta TableNode. Se
-  // memoiza por contenido para no re-renderizar todos los nodos en cada
-  // fotograma de arrastre: solo cuando algún slot cambia de verdad.
-  const usageRef = useRef<HandleUsage>({});
-  const usageSig = useRef("");
-  const handleUsage = useMemo(() => {
-    const sig = JSON.stringify(handles.usage);
-    if (sig !== usageSig.current) {
-      usageSig.current = sig;
-      usageRef.current = handles.usage;
-    }
-    return usageRef.current;
-  }, [handles]);
+  // Lado y punto exacto de cada extremo. Se recalcula al mover las tablas: la
+  // relación "se mueve" con ellas y los anclajes se deslizan por el contorno.
+  const routing = useMemo(() => routeConns(conns, rects), [conns, rects]);
 
   // --- Selección: una arista (clic en la relación) o una columna (clic en el
   // campo, que traza todas las relaciones en las que participa). ---
@@ -406,24 +308,28 @@ function DiagramCanvas({
     return conns.map((c) => {
       const isSel = activeEdgeIds.has(c.id);
       const selfRef = c.source === c.target;
-      const h = handles.assign[c.id];
+      const ends = routing.anchors[c.id];
+      // Los anclajes viajan en `data`: la arista los necesita para calcular sus
+      // extremos por su cuenta (ver RelEdge / edgeAnchors).
+      const anchors = { sourceAnchor: ends?.source, targetAnchor: ends?.target };
       const base = {
         id: c.id,
         source: c.source,
         target: c.target,
-        sourceHandle: h?.sourceHandle,
-        targetHandle: h?.targetHandle,
+        sourceHandle: ends && handleId("s", ends.source.side),
+        targetHandle: ends && handleId("t", ends.target.side),
         className: isSel ? "pgdiag-flow" : undefined,
         labelBgStyle: { fill: "#fff", fillOpacity: 0.85 },
       };
       if (c.join) {
         return {
           ...base,
-          type: "smoothstep",
+          type: "rel",
           label: c.join.join_type,
           labelStyle: { fontSize: 11, fontWeight: 700, fill: isSel ? "#b45309" : "#6d28d9" },
           style: { stroke: "#8a63d2", strokeWidth: 2 },
           markerEnd: { type: MarkerType.ArrowClosed, color: isSel ? "#f59e0b" : "#8a63d2" },
+          data: anchors,
         };
       }
       const r = c.rel!;
@@ -432,7 +338,7 @@ function DiagramCanvas({
       const stroke = selfRef ? (isSel ? "#f59e0b" : "#7c3aed") : "#5b8def";
       return {
         ...base,
-        type: selfRef ? "selfloop" : "smoothstep",
+        type: selfRef ? "selfloop" : "rel",
         label: r.inferred ? `${r.cardinality} (inferida)` : r.cardinality,
         labelStyle: {
           fontSize: 11,
@@ -443,6 +349,7 @@ function DiagramCanvas({
         style: { stroke, strokeWidth: selfRef ? 2.2 : 1.8 },
         markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
         data: {
+          ...anchors,
           columns: r.columns,
           ref_columns: r.ref_columns,
           ring: ring.get(c.id) ?? 0,
@@ -450,7 +357,7 @@ function DiagramCanvas({
         },
       };
     });
-  }, [conns, handles, activeEdgeIds]);
+  }, [conns, routing, activeEdgeIds]);
 
   /** Destinos alcanzables desde la columna seleccionada (para el panel). */
   const colTrace = useMemo(() => {
@@ -1274,7 +1181,7 @@ function DiagramCanvas({
               )}
             </div>
           )}
-          <HandleUsageContext.Provider value={handleUsage}>
+          <AnchorUsageContext.Provider value={routing.usage}>
             <ReactFlow
               nodes={nodes}
               edges={allEdges}
@@ -1294,7 +1201,7 @@ function DiagramCanvas({
               <Controls />
               <MiniMap pannable zoomable />
             </ReactFlow>
-          </HandleUsageContext.Provider>
+          </AnchorUsageContext.Provider>
         </div>
       </div>
     </div>

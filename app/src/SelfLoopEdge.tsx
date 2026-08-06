@@ -20,6 +20,7 @@
  */
 import { BaseEdge, EdgeLabelRenderer, type EdgeProps } from "@xyflow/react";
 import type { CSSProperties } from "react";
+import { useEdgeEnds, type AnchorData } from "./edgeAnchors";
 
 /** Separación base del lazo respecto al nodo, y salto entre lazos concéntricos. */
 const CLEAR_X = 48;
@@ -29,10 +30,14 @@ const CORNER = 11;
 
 export default function SelfLoopEdge({
   id,
+  source,
+  target,
   sourceX,
   sourceY,
   targetX,
   targetY,
+  sourcePosition,
+  targetPosition,
   markerEnd,
   style,
   label,
@@ -41,33 +46,43 @@ export default function SelfLoopEdge({
 }: EdgeProps) {
   const ring = Number((data as { ring?: number } | undefined)?.ring ?? 0);
   const selected = Boolean((data as { selected?: boolean } | undefined)?.selected);
+  // Mismo criterio que el resto de aristas: los extremos salen del anclaje
+  // calculado, no del handle. Aquí además es lo que mantiene el lazo pegado a la
+  // esquina superior derecha aunque la tabla cambie de alto al colapsarse.
+  const ends = useEdgeEnds(source, target, data as AnchorData | undefined, {
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
+
+  const { sourceX: sx, sourceY: sy, targetX: tx, targetY: ty } = ends;
 
   // Carriles del lazo: uno vertical a la derecha, otro horizontal por encima.
-  const railX = sourceX + CLEAR_X + ring * RING_STEP;
-  const railY = targetY - CLEAR_Y - ring * RING_STEP;
+  const railX = sx + CLEAR_X + ring * RING_STEP;
+  const railY = ty - CLEAR_Y - ring * RING_STEP;
 
   // Radio de esquina acotado, por si el nodo es muy pequeño o los carriles
   // quedan cerca: evita que las curvas se crucen sobre sí mismas.
-  const r = Math.max(
-    3,
-    Math.min(CORNER, Math.abs(sourceY - railY) / 2, Math.abs(railX - targetX) / 2)
-  );
+  const r = Math.max(3, Math.min(CORNER, Math.abs(sy - railY) / 2, Math.abs(railX - tx) / 2));
 
   const path = [
-    `M ${sourceX} ${sourceY}`,
-    `L ${railX - r} ${sourceY}`,
-    `Q ${railX} ${sourceY} ${railX} ${sourceY - r}`,
+    `M ${sx} ${sy}`,
+    `L ${railX - r} ${sy}`,
+    `Q ${railX} ${sy} ${railX} ${sy - r}`,
     `L ${railX} ${railY + r}`,
     `Q ${railX} ${railY} ${railX - r} ${railY}`,
-    `L ${targetX + r} ${railY}`,
-    `Q ${targetX} ${railY} ${targetX} ${railY + r}`,
-    `L ${targetX} ${targetY}`,
+    `L ${tx + r} ${railY}`,
+    `Q ${tx} ${railY} ${tx} ${railY + r}`,
+    `L ${tx} ${ty}`,
   ].join(" ");
 
   const color = (labelStyle as CSSProperties | undefined)?.color ?? "#6d28d9";
   // Etiqueta en mitad del carril vertical: siempre fuera del nodo.
   const labelX = railX;
-  const labelY = (sourceY + railY) / 2;
+  const labelY = (sy + railY) / 2;
 
   return (
     <>
