@@ -3,40 +3,83 @@
  * Personalizable: color de cabecera, colapsar, ocultar columnas (modo ✎).
  * PK marcada con llave, columnas FK con flecha.
  *
- * Conectores: todo el contorno es zona de conexión (ver handleSlots.ts). Se
- * renderizan todos los slots, pero solo se ven los que una relación ocupa; así
- * una tabla con muchas FKs muestra varios puntos separados en vez de un nudo.
+ * Conectores: todo el contorno es zona de conexión (ver anchors.ts). Cada
+ * relación engancha en un punto continuo del perímetro, así una tabla con muchas
+ * FKs muestra puntos separados en vez de un nudo, y al arrastrarla se deslizan.
  *
  * Clic en una columna: pide a DiagramView que trace sus relaciones.
  */
-import { useContext, useMemo, useState } from "react";
+import { memo, useContext, useState } from "react";
 import { Handle, type NodeProps, type Node } from "@xyflow/react";
 import type { TableDetail } from "./api/client";
 import {
-  HandleUsageContext,
+  AnchorUsageContext,
   SIDES,
   SIDE_POSITION,
-  SLOTS_PER_SIDE,
   handleId,
-  slotOffset,
+  type Anchor,
   type HandleRole,
   type Side,
-} from "./handleSlots";
+} from "./anchors";
 
 const MAX_COLS = 14;
 
-/** Todos los anclajes del contorno: 4 lados × N slots × (source + target). */
-const HANDLE_SPECS: { id: string; role: HandleRole; side: Side; slot: number }[] =
-  SIDES.flatMap((side) =>
-    Array.from({ length: SLOTS_PER_SIDE }, (_, slot) => slot).flatMap((slot) =>
-      (["t", "s"] as HandleRole[]).map((role) => ({
-        id: handleId(role, side, slot),
-        role,
-        side,
-        slot,
-      }))
-    )
+/**
+ * Handles: uno por lado y rol, y nada más.
+ *
+ * Son el mínimo que React Flow necesita para enlazar source con target. Están
+ * siempre en el centro del lado y son invisibles a propósito, porque el punto
+ * real de la arista no sale de aquí: lo calcula la propia arista (`RelEdge`) a
+ * partir del anclaje continuo. Antes había una rejilla de ~140 handles por nodo
+ * intentando hacer este trabajo, y el precio era que el enlace saltaba de slot
+ * en slot al arrastrar.
+ */
+const HANDLE_SPECS: { id: string; role: HandleRole; side: Side }[] = SIDES.flatMap((side) =>
+  (["t", "s"] as HandleRole[]).map((role) => ({ id: handleId(role, side), role, side }))
+);
+
+/** Puntito del contorno que marca dónde engancha una relación. */
+function dotStyle(a: Anchor, color: string): React.CSSProperties {
+  const along = `${Math.min(1, Math.max(0, a.frac)) * 100}%`;
+  const base: React.CSSProperties = {
+    position: "absolute",
+    width: 8,
+    height: 8,
+    boxSizing: "border-box",
+    borderRadius: "50%",
+    background: color,
+    border: "1.5px solid #fff",
+    transform: "translate(-50%, -50%)",
+    pointerEvents: "none",
+    zIndex: 2,
+  };
+  if (a.side === "left") return { ...base, left: 0, top: along };
+  if (a.side === "right") return { ...base, left: "100%", top: along };
+  if (a.side === "top") return { ...base, top: 0, left: along };
+  return { ...base, top: "100%", left: along };
+}
+
+/**
+ * Puntos del contorno + halo del perímetro.
+ *
+ * Va aparte y memoizado por una razón concreta: los anclajes cambian en CADA
+ * fotograma de un arrastre (para eso son continuos). Si `TableNode` consumiera
+ * el contexto, cada fotograma re-renderizaría la lista de columnas de todas las
+ * tablas del lienzo. Aislado aquí, lo que se repinta son cuatro `div`.
+ */
+const AnchorDots = memo(function AnchorDots({ nodeKey, color }: { nodeKey: string; color: string }) {
+  const usage = useContext(AnchorUsageContext);
+  const anchors = usage[nodeKey];
+  if (!anchors?.length) return null;
+  return (
+    <>
+      <div style={perimeterStyle(color)} />
+      {anchors.map((a, i) => (
+        <div key={`${a.side}-${i}`} style={dotStyle(a, color)} />
+      ))}
+    </>
   );
+});
 
 /** Contorno sutil que indica que todo el perímetro admite conexiones. */
 function perimeterStyle(color: string): React.CSSProperties {
@@ -98,9 +141,6 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
   const highlighted = new Set(highlight ?? []);
   const joinHl = new Set(joinHighlight ?? []);
   const key = `${t.schema_name}.${t.name}`;
-  const usage = useContext(HandleUsageContext);
-  const used = useMemo(() => new Set(usage[key] ?? []), [usage, key]);
-  const anyConnection = used.size > 0;
   const [editCols, setEditCols] = useState(false);
   const [relMenu, setRelMenu] = useState(false);
   const color = custom.color ?? NODE_PALETTE[0];
@@ -143,39 +183,30 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
         boxShadow: "0 2px 6px rgba(0,0,0,.12)",
       }}
     >
-      {/* Contorno sutil: señala que todo el perímetro es zona de conexión. */}
-      {anyConnection && <div style={perimeterStyle(color)} />}
+      {/* Halo del perímetro + punto de enganche de cada relación. */}
+      <AnchorDots nodeKey={key} color={color} />
 
-      {/* Anclajes repartidos por todo el contorno. La arista elige el lado más
-          cercano y, dentro de él, un slot propio: así varias relaciones de la
-          misma tabla no se amontonan en un solo punto. Solo son visibles los
-          slots ocupados; el resto queda invisible pero disponible. */}
-      {HANDLE_SPECS.map(({ id, role, side, slot }) => {
-        const on = used.has(id);
-        const along = side === "left" || side === "right"
-          ? { top: slotOffset(slot) }
-          : { left: slotOffset(slot) };
-        return (
-          <Handle
-            key={id}
-            id={id}
-            type={role === "s" ? "source" : "target"}
-            position={SIDE_POSITION[side]}
-            isConnectable={false}
-            style={{
-              ...along,
-              width: on ? 8 : 1,
-              height: on ? 8 : 1,
-              minWidth: on ? 8 : 1,
-              minHeight: on ? 8 : 1,
-              background: on ? color : "transparent",
-              border: on ? "1.5px solid #fff" : "none",
-              opacity: on ? 1 : 0,
-              zIndex: on ? 2 : 0,
-            }}
-          />
-        );
-      })}
+      {/* Handles de enganche, invisibles: la posición real la pone la arista. */}
+      {HANDLE_SPECS.map(({ id, role, side }) => (
+        <Handle
+          key={id}
+          id={id}
+          type={role === "s" ? "source" : "target"}
+          position={SIDE_POSITION[side]}
+          isConnectable={false}
+          style={{
+            width: 1,
+            height: 1,
+            minWidth: 1,
+            minHeight: 1,
+            background: "transparent",
+            border: "none",
+            opacity: 0,
+            zIndex: 0,
+          }}
+        />
+      ))}
+
       <div
         style={{
           background: color,
