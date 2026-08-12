@@ -28,12 +28,18 @@ export const KIND_ICON: Record<string, string> = {
   foreign: "⇄",
 };
 
+/**
+ * Color del icono por tipo de objeto. Son tokens porque un azul de 2.35:1 sobre
+ * el fondo oscuro no se distinguía de uno violeta de 2.67:1: los cinco tipos
+ * quedaban en el mismo gris sucio. Cada tema aclara u oscurece la familia
+ * manteniendo los cinco tonos separados entre sí.
+ */
 export const KIND_COLOR: Record<string, string> = {
-  table: "#2a5ca8",
-  partitioned: "#1c7ea0",
-  view: "#7a4dbf",
-  matview: "#a04d8f",
-  foreign: "#3a8a62",
+  table: "var(--pg-kind-table)",
+  partitioned: "var(--pg-kind-partitioned)",
+  view: "var(--pg-kind-view)",
+  matview: "var(--pg-kind-matview)",
+  foreign: "var(--pg-kind-foreign)",
 };
 
 export const KIND_LABEL: Record<string, string> = {
@@ -187,16 +193,6 @@ function fetchSearchObjects(
   }
   return p;
 }
-
-const TREE_CSS = `
-.pgtree-item { border-radius: 6px; transition: background .12s; }
-.pgtree-item:hover { background: #eef3fb; }
-.pgtree-item.pgtree-selected { background: #dbe7fb; }
-.pgtree-schema { border-radius: 6px; transition: background .12s; }
-.pgtree-schema:hover { background: #f0f2f5; }
-.pgtree-group { border-radius: 6px; transition: background .12s; }
-.pgtree-group:hover { background: #f5f6f8; }
-`;
 
 function groupByKind(items: ObjectSummary[]): [string, ObjectSummary[]][] {
   const groups = new Map<string, ObjectSummary[]>();
@@ -402,7 +398,7 @@ export default function ObjectTree({
           fontSize: 13,
         }}
       >
-        <span style={{ color: KIND_COLOR[o.kind] ?? "#2a5ca8", width: 14, textAlign: "center", flexShrink: 0 }}>
+        <span style={{ color: KIND_COLOR[o.kind] ?? "var(--pg-kind-table)", width: 14, textAlign: "center", flexShrink: 0 }}>
           {inCanvas ? "✓" : KIND_ICON[o.kind] ?? "▦"}
         </span>
         <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</span>
@@ -413,7 +409,7 @@ export default function ObjectTree({
           <span className="badge text-bg-warning" style={{ fontSize: 9 }} title="Estructura modificada desde el último refresh">±</span>
         )}
         {o.estimated_rows != null && (
-          <span style={{ color: "#adb5bd", fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>
+          <span style={{ color: "var(--pg-tree-meta)", fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>
             ~{o.estimated_rows}
           </span>
         )}
@@ -445,13 +441,13 @@ export default function ObjectTree({
             }}
           >
             {collapsible && (
-              <span style={{ fontSize: 9, color: "#868e96", width: 10 }}>
+              <span style={{ fontSize: 9, color: "var(--pg-tree-meta)", width: 10 }}>
                 {isCollapsed ? "▶" : "▼"}
               </span>
             )}
             <span
               style={{
-                color: KIND_COLOR[kind] ?? "#495057",
+                color: KIND_COLOR[kind] ?? "var(--bs-secondary-color)",
                 fontSize: 11,
                 fontWeight: 700,
                 textTransform: "uppercase",
@@ -460,7 +456,7 @@ export default function ObjectTree({
             >
               {KIND_GROUP[kind]}
             </span>
-            <span className="badge rounded-pill text-bg-light border" style={{ fontSize: 10 }}>
+            <span className="badge rounded-pill badge-neutral border" style={{ fontSize: 10 }}>
               {objs.length}
             </span>
           </div>
@@ -504,7 +500,6 @@ export default function ObjectTree({
 
   return (
     <aside className="bg-body border-end d-flex flex-column" style={{ width }}>
-      <style>{TREE_CSS}</style>
 
       <div style={{ padding: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
         <div className="position-relative" style={{ flex: "1 1 100%" }}>
@@ -616,7 +611,7 @@ export default function ObjectTree({
                       onChange={() => toggleSchemaFilter(s.name)}
                     />
                     <span className="text-truncate">{s.name}</span>
-                    <span className="badge rounded-pill text-bg-light border ms-auto" style={{ fontSize: 10 }}>
+                    <span className="badge rounded-pill badge-neutral border ms-auto" style={{ fontSize: 10 }}>
                       {s.table_count + s.view_count}
                     </span>
                   </label>
@@ -660,7 +655,7 @@ export default function ObjectTree({
       <div style={{ overflowY: "auto", flex: 1, padding: "0 6px 12px" }}>
         {searchBySchema ? (
           searchBySchema.length === 0 ? (
-            <p style={{ padding: 8, color: "#868e96" }}>Sin resultados para “{query}”.</p>
+            <p style={{ padding: 8, color: "var(--pg-tree-meta)" }}>Sin resultados para “{query}”.</p>
           ) : (
             searchBySchema.map(([schema, items]) => (
               <div key={schema}>
@@ -686,12 +681,12 @@ export default function ObjectTree({
                     userSelect: "none",
                   }}
                 >
-                  <span style={{ fontSize: 10, color: "#868e96", width: 12 }}>
+                  <span style={{ fontSize: 10, color: "var(--pg-tree-meta)", width: 12 }}>
                     {isOpen ? "▼" : "▶"}
                   </span>
                   <span style={{ fontWeight: 600, fontSize: 13.5 }}>{s.name}</span>
                   <span
-                    className="badge rounded-pill text-bg-light border ms-auto"
+                    className="badge rounded-pill badge-neutral border ms-auto"
                     style={{ fontSize: 10 }}
                     title={`${s.table_count} tablas · ${s.view_count} vistas`}
                   >
@@ -712,7 +707,7 @@ export default function ObjectTree({
           })
         )}
         {!searchBySchema && visibleSchemas.length === 0 && (
-          <p style={{ padding: 8, color: "#868e96" }}>Sin schemas visibles para este rol.</p>
+          <p style={{ padding: 8, color: "var(--pg-tree-meta)" }}>Sin schemas visibles para este rol.</p>
         )}
       </div>
 
@@ -747,7 +742,7 @@ export default function ObjectTree({
                   setMenu(null);
                   it.onClick();
                 }}
-                onMouseEnter={(e) => ((e.target as HTMLElement).style.background = "#eef3fb")}
+                onMouseEnter={(e) => ((e.target as HTMLElement).style.background = "var(--pg-menu-hover)")}
                 onMouseLeave={(e) => ((e.target as HTMLElement).style.background = "")}
                 style={{ padding: "7px 12px", cursor: "pointer", fontSize: 13 }}
               >

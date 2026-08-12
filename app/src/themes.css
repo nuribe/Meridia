@@ -1,60 +1,559 @@
-/* Variables de acento por tema.
-   --pg-accent: color del modo Explorador y acciones primarias.
-   --pg-accent2: color del modo Diagramas.
-   --pg-grad: degradado de cabeceras de sección. */
+/* ============================================================================
+   Sistema de color de Meridia — 4 temas sobre un juego único de tokens.
+   ============================================================================
 
+   REGLA PRINCIPAL: ningún componente escribe un color literal. Todo sale de un
+   token `--pg-*` definido aquí. Así un tema nuevo es un bloque de esta hoja y
+   no una cacería de hex por todo el árbol de componentes.
+
+   Por qué hay DOS tokens por acento (`--pg-accent` y `--pg-accent-text`):
+   un mismo color no puede servir de relleno y de texto a la vez. El relleno
+   necesita ser oscuro para que el texto blanco encima se lea; el texto necesita
+   ser claro para leerse sobre un fondo oscuro. Son requisitos opuestos, así que
+   son dos tokens:
+
+     --pg-accent       relleno sólido (botón, pestaña activa). Lleva encima
+                       --pg-accent-fg y ese par cumple >= 4.5:1.
+     --pg-accent-text  el mismo acento pero legible SOBRE el fondo del tema.
+                       Para enlaces, iconos, bordes y estados inactivos.
+
+   `-accent` es el modo Explorador y `-accent2` el modo Diagramas. En los cuatro
+   temas se sigue la misma regla: Explorador frío (azul/teal/violeta), Diagramas
+   cálido (rosa/ámbar). No es solo estética — es la única forma de que el par
+   siga siendo distinguible con daltonismo. Azul contra violeta, que es lo que
+   había antes en Claro y Oscuro, da ΔE 0.3 bajo deuteranopia: dos colores
+   literalmente idénticos para ~6 % de los hombres. Océano era peor todavía:
+   ambos acentos eran teal y el conmutador de modo no comunicaba nada a nadie.
+
+   Objetivos de contraste: WCAG AA — 4.5:1 en texto, 3:1 en bordes/iconos que
+   transmiten estado. Verificado en scripts/check-contrast.mjs.
+   ============================================================================ */
+
+/* ---------------------------------------------------------------- CLARO ---- */
 :root,
 [data-pg-theme="claro"] {
-  --pg-accent: #0d6efd;
-  --pg-accent2: #7c3aed;
-  --pg-grad: linear-gradient(90deg, #12305c, #2a5ca8);
+  --bs-body-bg: #ffffff;
+  --bs-body-bg-rgb: 255, 255, 255;
+  --bs-body-color: #1c2127;
+  --bs-body-color-rgb: 28, 33, 39;
+  --bs-emphasis-color: #0b0e12;
+  --bs-secondary-color: #59636e;
+  --bs-secondary-bg: #eceff2;
+  --bs-tertiary-bg: #f4f6f8;
+  --bs-border-color: #d3d9e0;
+  /* 3:1 tanto sobre --bs-body-bg (reposo) como sobre --bs-secondary-bg (hover). */
+  --pg-border-strong: #808a8e;
+
+  --pg-accent: #0b5ed7;
+  --pg-accent-fg: #ffffff;
+  --pg-accent-text: #0b5ed7;
+  --pg-accent2: #be185d;
+  --pg-accent2-fg: #ffffff;
+  --pg-accent2-text: #be185d;
+  --pg-grad: linear-gradient(90deg, #0f2d5c, #1d4ed8);
+  --pg-grad-fg: #ffffff;
+
+  /* Tarjetas del lienzo */
+  --pg-node-bg: #ffffff;
+  --pg-node-fg: #1c2127;
+  --pg-node-muted: #59636e;
+  --pg-node-faint: #7d8892;
+  --pg-node-divider: #e6eaee;
+  --pg-node-link: #0b5ed7;
+  --pg-node-link-on: #b45309;
+  --pg-node-shadow: rgba(15, 23, 42, 0.16);
+  --pg-canvas-bg: #f4f6f8;
+
+  /* Cabeceras de tabla (paleta ciclable con ◐). Texto blanco encima. */
+  --pg-node-c1: #12305c;
+  --pg-node-c2: #0d5f52;
+  --pg-node-c3: #5b3a8c;
+  --pg-node-c4: #8a3a3a;
+  --pg-node-c5: #35632b;
+  --pg-node-c6: #4a5560;
+
+  /* Menús flotantes dentro del lienzo */
+  --pg-menu-bg: #ffffff;
+  --pg-menu-fg: #1c2127;
+  --pg-menu-border: #d3d9e0;
+  --pg-menu-hover: #e9f0fb;
+
+  /* Resaltados de columna */
+  --pg-hl-pick: #f59e0b;
+  --pg-hl-pick-fg: #1f1300;
+  --pg-hl-pick-ring: #92400e;
+  --pg-hl-mark: #fde68a;
+  --pg-hl-mark-fg: #1f1300;
+  --pg-hl-join: #ddd6fe;
+  --pg-hl-join-fg: #1e1035;
+  --pg-hl-selffk: #6d28d9;
+
+  /* Aristas */
+  --pg-edge: #3059ad;
+  --pg-edge-self: #6d28d9;
+  --pg-edge-sel: #b45309;
+  --pg-edge-join: #6d28d9;
+  --pg-edge-label-bg: #ffffff;
+  --pg-edge-label-fg: #12305c;
+  --pg-edge-glow: 37, 99, 235;
+  --pg-edge-glow-sel: 180, 83, 9;
+
+  /* Árbol de objetos */
+  --pg-tree-hover: #e9f0fb;
+  --pg-tree-selected: #cfe0f8;
+  --pg-tree-schema-hover: #edf0f4;
+  --pg-tree-group-hover: #f2f4f7;
+  --pg-tree-meta: #59636e;
+  --pg-kind-table: #1e56a8;
+  --pg-kind-partitioned: #0f6479;
+  --pg-kind-view: #6b3fb0;
+  --pg-kind-matview: #96387f;
+  --pg-kind-foreign: #27694a;
+
+  /* Notas adhesivas */
+  --pg-note-fg: #2b2410;
+  --pg-note-resize: #b8a200;
+  --pg-note-c1: #fff3a8;
+  --pg-note-c2: #ffd6a5;
+  --pg-note-c3: #c8f7c5;
+  --pg-note-c4: #bde0fe;
+  --pg-note-c5: #ffc9de;
+  --pg-note-c6: #e4e6e9;
+
+  /* Plan de ejecución (semáforo de coste) */
+  --pg-sev-high: #c0292e;
+  --pg-sev-mid: #9a6100;
+  --pg-sev-low: #1f7a4d;
+
+  /* Resaltado SQL */
+  --pg-sql-comment: #4e7a3a;
+  --pg-sql-string: #a31515;
+  --pg-sql-ident: #0b5ed7;
+  --pg-sql-cast: #1c6b7a;
+  --pg-sql-number: #0a6b47;
+  --pg-sql-keyword: #1a3fd0;
+  --pg-sql-type: #8a4a12;
+  --pg-sql-func: #795e26;
+  --pg-sql-dollar: #9a20b8;
 }
 
+/* --------------------------------------------------------------- OCÉANO ---- */
+/* Claro y frío. Acento teal (Explorador) contra ámbar arena (Diagramas): tonos
+   opuestos en la rueda, imposible confundirlos. */
 [data-pg-theme="oceano"] {
+  --bs-body-bg: #f8fbfc;
+  --bs-body-bg-rgb: 248, 251, 252;
+  --bs-body-color: #12262c;
+  --bs-body-color-rgb: 18, 38, 44;
+  --bs-emphasis-color: #061418;
+  --bs-secondary-color: #4c626b;
+  --bs-secondary-bg: #e2ecef;
+  --bs-tertiary-bg: #edf4f6;
+  --bs-border-color: #c4d7dc;
+  --pg-border-strong: #75878a;
+
   --pg-accent: #0e7490;
-  --pg-accent2: #0f766e;
+  --pg-accent-fg: #ffffff;
+  --pg-accent-text: #0b6076;
+  --pg-accent2: #b45309;
+  --pg-accent2-fg: #ffffff;
+  --pg-accent2-text: #9a4708;
   --pg-grad: linear-gradient(90deg, #083344, #0e7490);
+  --pg-grad-fg: #ffffff;
+
+  --pg-node-bg: #ffffff;
+  --pg-node-fg: #12262c;
+  --pg-node-muted: #4c626b;
+  --pg-node-faint: #74888f;
+  --pg-node-divider: #e0eaed;
+  --pg-node-link: #0b6076;
+  --pg-node-link-on: #9a4708;
+  --pg-node-shadow: rgba(8, 51, 68, 0.18);
+  --pg-canvas-bg: #edf4f6;
+
+  --pg-node-c1: #0b4f66;
+  --pg-node-c2: #0d5f52;
+  --pg-node-c3: #3f4d8c;
+  --pg-node-c4: #8a3a3a;
+  --pg-node-c5: #35632b;
+  --pg-node-c6: #4a5560;
+
+  --pg-menu-bg: #ffffff;
+  --pg-menu-fg: #12262c;
+  --pg-menu-border: #c4d7dc;
+  --pg-menu-hover: #e2f0f4;
+
+  --pg-hl-pick: #f59e0b;
+  --pg-hl-pick-fg: #1f1300;
+  --pg-hl-pick-ring: #92400e;
+  --pg-hl-mark: #fde68a;
+  --pg-hl-mark-fg: #1f1300;
+  --pg-hl-join: #bfe6ef;
+  --pg-hl-join-fg: #06222b;
+  --pg-hl-selffk: #0b6076;
+
+  --pg-edge: #14708c;
+  --pg-edge-self: #0f766e;
+  --pg-edge-sel: #b45309;
+  --pg-edge-join: #0f766e;
+  --pg-edge-label-bg: #ffffff;
+  --pg-edge-label-fg: #0b3d4d;
+  --pg-edge-glow: 14, 116, 144;
+  --pg-edge-glow-sel: 180, 83, 9;
+
+  --pg-tree-hover: #e2f0f4;
+  --pg-tree-selected: #c4e4ec;
+  --pg-tree-schema-hover: #eaf1f3;
+  --pg-tree-group-hover: #eff5f7;
+  --pg-tree-meta: #4c626b;
+  --pg-kind-table: #0f5f7a;
+  --pg-kind-partitioned: #0d6b6b;
+  --pg-kind-view: #4b4bb0;
+  --pg-kind-matview: #96387f;
+  --pg-kind-foreign: #27694a;
+
+  --pg-note-fg: #2b2410;
+  --pg-note-resize: #b8a200;
+  --pg-note-c1: #fff3a8;
+  --pg-note-c2: #ffd6a5;
+  --pg-note-c3: #c8f7c5;
+  --pg-note-c4: #bde0fe;
+  --pg-note-c5: #ffc9de;
+  --pg-note-c6: #e0e6e8;
+
+  --pg-sev-high: #c0292e;
+  --pg-sev-mid: #9a6100;
+  --pg-sev-low: #1f7a4d;
+
+  --pg-sql-comment: #4e7a3a;
+  --pg-sql-string: #a31515;
+  --pg-sql-ident: #0b6076;
+  --pg-sql-cast: #1c6b7a;
+  --pg-sql-number: #0a6b47;
+  --pg-sql-keyword: #1a3fd0;
+  --pg-sql-type: #8a4a12;
+  --pg-sql-func: #795e26;
+  --pg-sql-dollar: #9a20b8;
 }
 
+/* --------------------------------------------------------------- OSCURO ---- */
+/* Pizarra neutra. El lienzo es el nivel más bajo y las tarjetas se apoyan
+   encima con un tono más claro: la elevación se lee sin necesidad de bordes
+   duros ni del choque de una tarjeta blanca sobre fondo negro. */
 [data-pg-theme="oscuro"] {
-  --pg-accent: #3b82f6;
-  --pg-accent2: #a78bfa;
-  --pg-grad: linear-gradient(90deg, #1e3a8a, #3b82f6);
+  --bs-body-bg: #171b21;
+  --bs-body-bg-rgb: 23, 27, 33;
+  --bs-body-color: #e3e8ee;
+  --bs-body-color-rgb: 227, 232, 238;
+  --bs-emphasis-color: #ffffff;
+  --bs-secondary-color: #a3aeba;
+  --bs-secondary-bg: #262c34;
+  --bs-tertiary-bg: #1f242b;
+  --bs-border-color: #39414b;
+  --pg-border-strong: #6a7681;
+
+  --pg-accent: #1d4ed8;
+  --pg-accent-fg: #ffffff;
+  --pg-accent-text: #86b4fb;
+  --pg-accent2: #be185d;
+  --pg-accent2-fg: #ffffff;
+  --pg-accent2-text: #f472b6;
+  --pg-grad: linear-gradient(90deg, #14213f, #1d4ed8);
+  --pg-grad-fg: #ffffff;
+
+  --pg-node-bg: #242a33;
+  --pg-node-fg: #e3e8ee;
+  --pg-node-muted: #a3aeba;
+  --pg-node-faint: #808c99;
+  --pg-node-divider: #343d48;
+  --pg-node-link: #86b4fb;
+  --pg-node-link-on: #fbbf24;
+  --pg-node-shadow: rgba(0, 0, 0, 0.45);
+  --pg-canvas-bg: #171b21;
+
+  /* Cabeceras elevadas respecto al claro: sobre una tarjeta oscura, un azul
+     marino se hundiría en el fondo en vez de separarse de él. */
+  --pg-node-c1: #2f5fa8;
+  --pg-node-c2: #17705f;
+  --pg-node-c3: #6b4aa8;
+  --pg-node-c4: #a44343;
+  --pg-node-c5: #417a35;
+  --pg-node-c6: #5a6673;
+
+  --pg-menu-bg: #2b323b;
+  --pg-menu-fg: #e3e8ee;
+  --pg-menu-border: #454e5a;
+  --pg-menu-hover: #384250;
+
+  --pg-hl-pick: #f59e0b;
+  --pg-hl-pick-fg: #1f1300;
+  --pg-hl-pick-ring: #92400e;
+  --pg-hl-mark: #a16207;
+  --pg-hl-mark-fg: #fff8e6;
+  --pg-hl-join: #4c1d95;
+  --pg-hl-join-fg: #ece5ff;
+  --pg-hl-selffk: #b9a1fb;
+
+  --pg-edge: #6f9fe8;
+  --pg-edge-self: #a78bfa;
+  --pg-edge-sel: #fbbf24;
+  --pg-edge-join: #a78bfa;
+  --pg-edge-label-bg: #242a33;
+  --pg-edge-label-fg: #cfdaea;
+  --pg-edge-glow: 111, 159, 232;
+  --pg-edge-glow-sel: 251, 191, 36;
+
+  --pg-tree-hover: #272e37;
+  --pg-tree-selected: #1e3f6b;
+  --pg-tree-schema-hover: #232a32;
+  --pg-tree-group-hover: #20262d;
+  --pg-tree-meta: #a3aeba;
+  --pg-kind-table: #7fb3f5;
+  --pg-kind-partitioned: #4fbdd8;
+  --pg-kind-view: #b79bf0;
+  --pg-kind-matview: #e58fc9;
+  --pg-kind-foreign: #63cf95;
+
+  /* Las notas conservan la metáfora de papel: fondo pastel y texto oscuro.
+     Bajamos el brillo para que no deslumbren sobre el lienzo oscuro. */
+  --pg-note-fg: #2b2410;
+  --pg-note-resize: #d4bb00;
+  --pg-note-c1: #e6db93;
+  --pg-note-c2: #e6c091;
+  --pg-note-c3: #b4dfb1;
+  --pg-note-c4: #a9c9e4;
+  --pg-note-c5: #e4b4c7;
+  --pg-note-c6: #cbcfd4;
+
+  --pg-sev-high: #f2777c;
+  --pg-sev-mid: #e0a72c;
+  --pg-sev-low: #4cc38a;
+
+  --pg-sql-comment: #7cae6a;
+  --pg-sql-string: #e5c07b;
+  --pg-sql-ident: #9cdcfe;
+  --pg-sql-cast: #4ec9b0;
+  --pg-sql-number: #d19a66;
+  --pg-sql-keyword: #78a9ff;
+  --pg-sql-type: #ffa657;
+  --pg-sql-func: #56b6c2;
+  --pg-sql-dollar: #d69bd4;
 }
 
+/* -------------------------------------------------------------- VIOLETA ---- */
+/* Oscuro con base malva. Acento violeta (Explorador) contra rosa (Diagramas):
+   cercanos en la rueda, así que se separan por luminosidad además de por tono. */
 [data-pg-theme="violeta"] {
-  --pg-accent: #8b5cf6;
-  --pg-accent2: #db2777;
-  --pg-grad: linear-gradient(90deg, #4c1d95, #8b5cf6);
+  --bs-body-bg: #1a1622;
+  --bs-body-bg-rgb: 26, 22, 34;
+  --bs-body-color: #e9e3f2;
+  --bs-body-color-rgb: 233, 227, 242;
+  --bs-emphasis-color: #ffffff;
+  --bs-secondary-color: #aca0c0;
+  --bs-secondary-bg: #2a2436;
+  --bs-tertiary-bg: #221d2d;
+  --bs-border-color: #443a55;
+  --pg-border-strong: #776b8e;
+
+  --pg-accent: #6d28d9;
+  --pg-accent-fg: #ffffff;
+  --pg-accent-text: #c0a6fc;
+  --pg-accent2: #be185d;
+  --pg-accent2-fg: #ffffff;
+  --pg-accent2-text: #f79ac0;
+  --pg-grad: linear-gradient(90deg, #33146b, #6d28d9);
+  --pg-grad-fg: #ffffff;
+
+  --pg-node-bg: #272031;
+  --pg-node-fg: #e9e3f2;
+  --pg-node-muted: #aca0c0;
+  --pg-node-faint: #887c9c;
+  --pg-node-divider: #3b3349;
+  --pg-node-link: #c0a6fc;
+  --pg-node-link-on: #fbbf24;
+  --pg-node-shadow: rgba(0, 0, 0, 0.5);
+  --pg-canvas-bg: #1a1622;
+
+  --pg-node-c1: #4f4bab;
+  --pg-node-c2: #17705f;
+  --pg-node-c3: #7a4ab8;
+  --pg-node-c4: #a83f6c;
+  --pg-node-c5: #417a35;
+  --pg-node-c6: #605870;
+
+  --pg-menu-bg: #2f2740;
+  --pg-menu-fg: #e9e3f2;
+  --pg-menu-border: #4d4260;
+  --pg-menu-hover: #3d3352;
+
+  --pg-hl-pick: #f59e0b;
+  --pg-hl-pick-fg: #1f1300;
+  --pg-hl-pick-ring: #92400e;
+  --pg-hl-mark: #9a5b12;
+  --pg-hl-mark-fg: #fff6e8;
+  --pg-hl-join: #5b2183;
+  --pg-hl-join-fg: #f4e7ff;
+  --pg-hl-selffk: #c0a6fc;
+
+  --pg-edge: #a78bfa;
+  --pg-edge-self: #f79ac0;
+  --pg-edge-sel: #fbbf24;
+  --pg-edge-join: #f79ac0;
+  --pg-edge-label-bg: #272031;
+  --pg-edge-label-fg: #ded3f0;
+  --pg-edge-glow: 167, 139, 250;
+  --pg-edge-glow-sel: 251, 191, 36;
+
+  --pg-tree-hover: #2c2439;
+  --pg-tree-selected: #452a6b;
+  --pg-tree-schema-hover: #272134;
+  --pg-tree-group-hover: #231d2e;
+  --pg-tree-meta: #aca0c0;
+  --pg-kind-table: #9db8f5;
+  --pg-kind-partitioned: #5fc2d8;
+  --pg-kind-view: #c0a6fc;
+  --pg-kind-matview: #f79ac0;
+  --pg-kind-foreign: #6fd3a0;
+
+  --pg-note-fg: #2b2410;
+  --pg-note-resize: #d4bb00;
+  --pg-note-c1: #e6db93;
+  --pg-note-c2: #e6c091;
+  --pg-note-c3: #b4dfb1;
+  --pg-note-c4: #a9c9e4;
+  --pg-note-c5: #e4b4c7;
+  --pg-note-c6: #cdc8d4;
+
+  --pg-sev-high: #f2777c;
+  --pg-sev-mid: #e0a72c;
+  --pg-sev-low: #4cc38a;
+
+  --pg-sql-comment: #8fb87e;
+  --pg-sql-string: #f0cd8a;
+  --pg-sql-ident: #a8d8fb;
+  --pg-sql-cast: #5fd0ba;
+  --pg-sql-number: #e0a97a;
+  --pg-sql-keyword: #b79bf0;
+  --pg-sql-type: #ffb072;
+  --pg-sql-func: #6fc6d2;
+  --pg-sql-dollar: #f79ac0;
 }
 
-/* Botones y enlaces primarios siguen el acento del tema */
+/* ============================================================================
+   Invariantes — iguales en los cuatro temas, pero con nombre para que ningún
+   componente tenga que escribir un literal.
+   ============================================================================ */
+:root {
+  /* Las cabeceras de tabla siempre llevan texto blanco: los seis colores
+     ciclables de cada tema están elegidos para garantizarlo. */
+  --pg-node-header-fg: #ffffff;
+  /* Velo de los diálogos modales. */
+  --pg-scrim: rgba(0, 0, 0, 0.6);
+}
+
+/* ============================================================================
+   Puentes hacia Bootstrap
+   ============================================================================ */
+
+/* Relleno primario: siempre --pg-accent con --pg-accent-fg encima. */
 .btn-primary {
   --bs-btn-bg: var(--pg-accent);
+  --bs-btn-color: var(--pg-accent-fg);
   --bs-btn-border-color: var(--pg-accent);
+  --bs-btn-hover-color: var(--pg-accent-fg);
   --bs-btn-hover-bg: color-mix(in srgb, var(--pg-accent) 85%, black);
   --bs-btn-hover-border-color: color-mix(in srgb, var(--pg-accent) 85%, black);
+  --bs-btn-active-color: var(--pg-accent-fg);
   --bs-btn-active-bg: color-mix(in srgb, var(--pg-accent) 75%, black);
   --bs-btn-active-border-color: color-mix(in srgb, var(--pg-accent) 75%, black);
+  --bs-btn-disabled-color: var(--pg-accent-fg);
   --bs-btn-disabled-bg: var(--pg-accent);
   --bs-btn-disabled-border-color: var(--pg-accent);
 }
 
+/* Contorno primario: en reposo es texto sobre el fondo del tema, así que usa
+   la variante -text; al rellenarse pasa al par accent/accent-fg. */
 .btn-outline-primary {
-  --bs-btn-color: var(--pg-accent);
-  --bs-btn-border-color: var(--pg-accent);
+  --bs-btn-color: var(--pg-accent-text);
+  --bs-btn-border-color: var(--pg-accent-text);
+  --bs-btn-hover-color: var(--pg-accent-fg);
   --bs-btn-hover-bg: var(--pg-accent);
   --bs-btn-hover-border-color: var(--pg-accent);
+  --bs-btn-active-color: var(--pg-accent-fg);
   --bs-btn-active-bg: var(--pg-accent);
   --bs-btn-active-border-color: var(--pg-accent);
+  --bs-btn-disabled-color: var(--pg-accent-text);
+  --bs-btn-disabled-border-color: var(--pg-accent-text);
 }
 
-.link-primary {
-  color: var(--pg-accent) !important;
+.link-primary,
+a.link-primary:hover {
+  color: var(--pg-accent-text) !important;
 }
 
-/* Árbol en modo oscuro */
-[data-bs-theme="dark"] .pgtree-item:hover { background: #2b3035; }
-[data-bs-theme="dark"] .pgtree-item.pgtree-selected { background: #1e3a5f; }
-[data-bs-theme="dark"] .pgtree-schema:hover { background: #2b3035; }
-[data-bs-theme="dark"] .pgtree-group:hover { background: #262a2e; }
+.text-bg-accent {
+  background: var(--pg-accent);
+  color: var(--pg-accent-fg);
+}
+
+/* ============================================================================
+   Árbol de objetos — un solo juego de reglas para los cuatro temas.
+   (Antes el hover claro se aplicaba también en oscuro: texto claro sobre fondo
+   claro, 1.17:1.)
+   ============================================================================ */
+.pgtree-item {
+  border-radius: 6px;
+  transition: background 0.12s;
+}
+.pgtree-item:hover {
+  background: var(--pg-tree-hover);
+}
+.pgtree-item.pgtree-selected {
+  background: var(--pg-tree-selected);
+}
+.pgtree-schema {
+  border-radius: 6px;
+  transition: background 0.12s;
+}
+.pgtree-schema:hover {
+  background: var(--pg-tree-schema-hover);
+}
+.pgtree-group {
+  border-radius: 6px;
+  transition: background 0.12s;
+}
+.pgtree-group:hover {
+  background: var(--pg-tree-group-hover);
+}
+
+/* Foco visible con el acento del tema, para navegación por teclado. */
+.pgtree-item:focus-visible,
+.pgtree-schema:focus-visible,
+.pgtree-group:focus-visible {
+  outline: 2px solid var(--pg-accent-text);
+  outline-offset: -2px;
+}
+
+/* ============================================================================
+   Utilidades neutras
+   ============================================================================
+   Bootstrap tiene `.text-bg-light` y `.btn-outline-light`, pero ambas fijan el
+   claro como valor absoluto: en un tema oscuro producen pastillas blancas
+   sueltas por toda la interfaz. Estas dos siguen al tema.
+   ============================================================================ */
+.badge-neutral {
+  background: var(--bs-secondary-bg);
+  color: var(--bs-body-color);
+  border-color: var(--bs-border-color) !important;
+}
+
+.btn-outline-neutral {
+  --bs-btn-color: var(--bs-body-color);
+  --bs-btn-border-color: var(--pg-border-strong);
+  --bs-btn-hover-color: var(--bs-body-color);
+  --bs-btn-hover-bg: var(--bs-secondary-bg);
+  --bs-btn-hover-border-color: var(--pg-border-strong);
+  --bs-btn-active-color: var(--bs-body-color);
+  --bs-btn-active-bg: var(--bs-secondary-bg);
+  --bs-btn-active-border-color: var(--pg-border-strong);
+}

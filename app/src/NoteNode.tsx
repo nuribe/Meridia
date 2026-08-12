@@ -4,7 +4,17 @@
  */
 import { NodeResizer, type Node, type NodeProps } from "@xyflow/react";
 
-export const NOTE_PALETTE = ["#fff9b1", "#ffd6a5", "#c8f7c5", "#bde0fe", "#ffc9de", "#e8e8e8"];
+/** Colores de nota. Los temas oscuros bajan el brillo de los pasteles para que
+ *  no deslumbren sobre el lienzo, manteniendo la metáfora de papel: fondo claro
+ *  y texto oscuro en los cuatro temas. */
+export const NOTE_PALETTE = [
+  "var(--pg-note-c1)",
+  "var(--pg-note-c2)",
+  "var(--pg-note-c3)",
+  "var(--pg-note-c4)",
+  "var(--pg-note-c5)",
+  "var(--pg-note-c6)",
+];
 
 export interface NoteData {
   text: string;
@@ -25,14 +35,14 @@ export default function NoteNode({ id, data, selected }: NodeProps<NoteNodeType>
 
   return (
     <div style={{ width: "100%", height: "100%", minWidth: 120, minHeight: 80 }}>
-      <NodeResizer isVisible={!!selected} minWidth={120} minHeight={80} lineStyle={{ borderColor: "#b8a200" }} />
+      <NodeResizer isVisible={!!selected} minWidth={120} minHeight={80} lineStyle={{ borderColor: "var(--pg-note-resize)" }} />
       <div
         style={{
           width: "100%",
           height: "100%",
           background: data.color,
           borderRadius: 4,
-          boxShadow: "0 3px 8px rgba(0,0,0,.18)",
+          boxShadow: "0 3px 8px var(--pg-node-shadow)",
           display: "flex",
           flexDirection: "column",
           fontFamily: "system-ui",
@@ -65,7 +75,7 @@ export default function NoteNode({ id, data, selected }: NodeProps<NoteNodeType>
             padding: "2px 8px 8px",
             fontSize: 13,
             fontFamily: "inherit",
-            color: "#333",
+            color: "var(--pg-note-fg)",
           }}
         />
       </div>

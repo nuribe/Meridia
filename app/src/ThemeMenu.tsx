@@ -45,7 +45,8 @@ export default function ThemeMenu() {
                     height: 14,
                     borderRadius: 4,
                     background: t.swatch,
-                    border: "1px solid rgba(0,0,0,.2)",
+                    // Un negro translúcido desaparecía sobre los temas oscuros.
+                    border: "1px solid var(--pg-border-strong)",
                     flexShrink: 0,
                   }}
                 />

@@ -227,7 +227,7 @@ function ProfilesScreen({
           {/* Versión de la build: es lo primero que hace falta saber al
               reportar un problema, y coincide con el nombre del release. */}
           <span
-            className="badge text-bg-light border font-monospace fw-normal"
+            className="badge badge-neutral border font-monospace fw-normal"
             title={
               IS_DEV_BUILD
                 ? "Build local sin versionar"
@@ -582,7 +582,7 @@ function DatabasesScreen({
                 >
                   <span className="fw-semibold flex-grow-1">🗄 {db.name}</span>
                   <small className="text-body-secondary">{db.owner}</small>
-                  <span className="badge text-bg-light border">{db.encoding}</span>
+                  <span className="badge badge-neutral border">{db.encoding}</span>
                 </button>
               ))}
             </div>

@@ -79,7 +79,7 @@ export default function SelfLoopEdge({
     `L ${tx} ${ty}`,
   ].join(" ");
 
-  const color = (labelStyle as CSSProperties | undefined)?.color ?? "#6d28d9";
+  const color = (labelStyle as CSSProperties | undefined)?.color ?? "var(--pg-edge-self)";
   // Etiqueta en mitad del carril vertical: siempre fuera del nodo.
   const labelX = railX;
   const labelY = (sy + railY) / 2;
@@ -99,11 +99,16 @@ export default function SelfLoopEdge({
               fontWeight: 700,
               whiteSpace: "nowrap",
               color,
-              background: "rgba(255,255,255,.94)",
+              background: "var(--pg-edge-label-bg)",
               border: `1px solid ${color}`,
               padding: "0 5px",
               borderRadius: 9,
-              boxShadow: selected ? `0 0 0 2px ${color}55` : "0 1px 3px rgba(0,0,0,.15)",
+              // color-mix y no `${color}55`: ahora `color` puede ser un token
+              // var(--pg-edge-self), y concatenarle el alfa en hexadecimal
+              // daría "var(--pg-edge-self)55", que no es un color válido.
+              boxShadow: selected
+                ? `0 0 0 2px color-mix(in srgb, ${color} 33%, transparent)`
+                : "0 1px 3px var(--pg-node-shadow)",
               pointerEvents: "all",
             }}
           >

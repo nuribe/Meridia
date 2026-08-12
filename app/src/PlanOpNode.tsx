@@ -58,9 +58,9 @@ export function opIcon(op: string): string {
 
 /** Escala de color por peso: verde (barato) → ámbar → rojo (caro). */
 export function weightColor(weight: number): string {
-  if (weight >= 0.66) return "#e5484d";
-  if (weight >= 0.33) return "#f5a524";
-  return "#30a46c";
+  if (weight >= 0.66) return "var(--pg-sev-high)";
+  if (weight >= 0.33) return "var(--pg-sev-mid)";
+  return "var(--pg-sev-low)";
 }
 
 function fmt(v: number | null): string {
@@ -89,11 +89,11 @@ export default function PlanOpNode({ data, selected }: NodeProps<PlanOpNodeType>
         width: PLAN_NODE_WIDTH,
         background: "var(--bs-body-bg)",
         color: "var(--bs-body-color)",
-        border: `2px solid ${selected ? "#f59e0b" : color}`,
+        border: `2px solid ${selected ? "var(--pg-hl-pick)" : color}`,
         borderRadius: 10,
         boxShadow: data.hottest
           ? `0 0 0 3px color-mix(in srgb, ${color} 30%, transparent)`
-          : "0 1px 4px rgba(0,0,0,.18)",
+          : "0 1px 4px var(--pg-node-shadow)",
         overflow: "hidden",
         fontSize: 12,
         fontVariantNumeric: "tabular-nums",
