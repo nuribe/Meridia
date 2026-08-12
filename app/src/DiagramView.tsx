@@ -64,25 +64,25 @@ const edgeTypes = { selfloop: SelfLoopEdge, rel: RelEdge };
 
 const FLOW_CSS = `
 .react-flow__edge.pgdiag-flow .react-flow__edge-path {
-  stroke: #f59e0b !important;
+  stroke: var(--pg-edge-sel) !important;
   stroke-width: 3.5 !important;
   stroke-dasharray: 10 7;
   animation: pgdiagFlow .45s linear infinite;
-  filter: drop-shadow(0 0 4px rgba(245, 158, 11, .85));
+  filter: drop-shadow(0 0 4px rgba(var(--pg-edge-glow-sel), .85));
 }
 @keyframes pgdiagFlow { to { stroke-dashoffset: -17; } }
 .react-flow__edge.pgdiag-flow .react-flow__edge-text { font-weight: 700; }
 .react-flow__node.pgdiag-hit { animation: pgdiagHit 1.2s ease-out 2; }
 @keyframes pgdiagHit {
   0%, 100% { filter: none; }
-  30% { filter: drop-shadow(0 0 0 3px #f59e0b) drop-shadow(0 0 10px rgba(245,158,11,.9)); }
+  30% { filter: drop-shadow(0 0 0 3px var(--pg-edge-sel)) drop-shadow(0 0 10px rgba(var(--pg-edge-glow-sel),.9)); }
 }
 /* Trazado de relación por columna: origen en azul, destinos en ámbar. */
 .react-flow__node.pgdiag-origin {
-  filter: drop-shadow(0 0 5px rgba(37,99,235,.9)) drop-shadow(0 0 11px rgba(37,99,235,.45));
+  filter: drop-shadow(0 0 5px rgba(var(--pg-edge-glow),.9)) drop-shadow(0 0 11px rgba(var(--pg-edge-glow),.45));
 }
 .react-flow__node.pgdiag-dest {
-  filter: drop-shadow(0 0 5px rgba(245,158,11,.95)) drop-shadow(0 0 12px rgba(245,158,11,.5));
+  filter: drop-shadow(0 0 5px rgba(var(--pg-edge-glow-sel),.95)) drop-shadow(0 0 12px rgba(var(--pg-edge-glow-sel),.5));
 }
 `;
 
@@ -319,23 +319,36 @@ function DiagramCanvas({
         sourceHandle: ends && handleId("s", ends.source.side),
         targetHandle: ends && handleId("t", ends.target.side),
         className: isSel ? "pgdiag-flow" : undefined,
-        labelBgStyle: { fill: "#fff", fillOpacity: 0.85 },
+        labelBgStyle: { fill: "var(--pg-edge-label-bg)", fillOpacity: 0.9 },
       };
       if (c.join) {
         return {
           ...base,
           type: "rel",
           label: c.join.join_type,
-          labelStyle: { fontSize: 11, fontWeight: 700, fill: isSel ? "#b45309" : "#6d28d9" },
-          style: { stroke: "#8a63d2", strokeWidth: 2 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: isSel ? "#f59e0b" : "#8a63d2" },
+          labelStyle: {
+            fontSize: 11,
+            fontWeight: 700,
+            fill: isSel ? "var(--pg-edge-sel)" : "var(--pg-edge-join)",
+          },
+          style: { stroke: "var(--pg-edge-join)", strokeWidth: 2 },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: isSel ? "var(--pg-edge-sel)" : "var(--pg-edge-join)",
+          },
           data: anchors,
         };
       }
       const r = c.rel!;
       // Las reflexivas llevan color propio (índigo) y trazo algo más grueso:
       // sin eso se confunden con las aristas que solo pasan cerca del nodo.
-      const stroke = selfRef ? (isSel ? "#f59e0b" : "#7c3aed") : "#5b8def";
+      const stroke = selfRef
+        ? isSel
+          ? "var(--pg-edge-sel)"
+          : "var(--pg-edge-self)"
+        : isSel
+          ? "var(--pg-edge-sel)"
+          : "var(--pg-edge)";
       return {
         ...base,
         type: selfRef ? "selfloop" : "rel",
@@ -343,8 +356,8 @@ function DiagramCanvas({
         labelStyle: {
           fontSize: 11,
           fontWeight: selfRef ? 700 : 600,
-          fill: isSel ? "#b45309" : selfRef ? "#6d28d9" : "#12305c",
-          color: isSel ? "#b45309" : selfRef ? "#6d28d9" : "#12305c",
+          fill: isSel ? "var(--pg-edge-sel)" : selfRef ? "var(--pg-edge-self)" : "var(--pg-edge-label-fg)",
+          color: isSel ? "var(--pg-edge-sel)" : selfRef ? "var(--pg-edge-self)" : "var(--pg-edge-label-fg)",
         },
         style: { stroke, strokeWidth: selfRef ? 2.2 : 1.8 },
         markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
@@ -834,7 +847,11 @@ function DiagramCanvas({
     if (!el) return;
     setStatus(`Exportando ${format.toUpperCase()}…`);
     try {
-      const opts = { backgroundColor: "#ffffff", filter: EXPORT_FILTER, pixelRatio: 2 };
+      // El fondo de la exportación sale del tema activo. Fijarlo en blanco
+      // dejaba las tarjetas de los temas oscuros flotando sobre nada.
+      const backgroundColor =
+        getComputedStyle(document.body).backgroundColor || "#ffffff";
+      const opts = { backgroundColor, filter: EXPORT_FILTER, pixelRatio: 2 };
       const dataUrl = format === "png" ? await toPng(el, opts) : await toSvg(el, opts);
       const saved = await saveFile(`${diagramName || "diagrama"}.${format}`, dataUrl);
       setStatus(saved ? "Exportado ✔" : "");
@@ -1230,7 +1247,7 @@ export function OfflineDiagramView({ doc, onBack }: { doc: PgDiagFile; onBack: (
       <style>{FLOW_CSS}</style>
       <header
         className="d-flex align-items-center gap-2 px-3 py-2 bg-body border-bottom"
-        style={{ borderBottom: "3px solid var(--pg-accent2)" }}
+        style={{ borderBottom: "3px solid var(--pg-accent2-text)" }}
       >
         <button className="btn btn-sm btn-outline-secondary" onClick={onBack} title="Volver al inicio">
           ← Inicio
@@ -1325,7 +1342,7 @@ export default function DiagramView({ profileId, dbname, onBack }: Props) {
                   style={{
                     whiteSpace: "nowrap",
                     background: isActive ? "var(--pg-accent2)" : "transparent",
-                    color: isActive ? "#fff" : "var(--bs-secondary-color)",
+                    color: isActive ? "var(--pg-accent2-fg)" : "var(--bs-secondary-color)",
                     fontWeight: isActive ? 700 : 400,
                     border: isActive ? "1px solid var(--pg-accent2)" : "1px solid transparent",
                     borderBottom: "none",

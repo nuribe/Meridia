@@ -48,7 +48,7 @@ function dotStyle(a: Anchor, color: string): React.CSSProperties {
     boxSizing: "border-box",
     borderRadius: "50%",
     background: color,
-    border: "1.5px solid #fff",
+    border: "1.5px solid var(--pg-node-bg)",
     transform: "translate(-50%, -50%)",
     pointerEvents: "none",
     zIndex: 2,
@@ -93,7 +93,24 @@ function perimeterStyle(color: string): React.CSSProperties {
   };
 }
 
-export const NODE_PALETTE = ["#12305c", "#0e6b5c", "#5b3a8c", "#8a3a3a", "#3a6e2f", "#555555"];
+/**
+ * Colores ciclables de la cabecera (botón ◐).
+ *
+ * Son tokens y no literales porque un azul marino que funciona sobre una
+ * tarjeta blanca se hunde en el fondo sobre una oscura. Cada tema define sus
+ * seis variantes; todas garantizan texto blanco legible encima.
+ *
+ * Los diagramas guardados antes de este cambio llevan un hex literal: sigue
+ * pintándose tal cual, solo que al pulsar ◐ el ciclo vuelve a empezar por c1.
+ */
+export const NODE_PALETTE = [
+  "var(--pg-node-c1)",
+  "var(--pg-node-c2)",
+  "var(--pg-node-c3)",
+  "var(--pg-node-c4)",
+  "var(--pg-node-c5)",
+  "var(--pg-node-c6)",
+];
 
 export interface NodeCustom {
   color?: string | null;
@@ -174,13 +191,16 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
     <div
       style={{
         position: "relative",
-        background: "#fff",
+        background: "var(--pg-node-bg)",
+        // Fijar el fondo obliga a fijar también el texto: heredarlo era lo que
+        // dejaba gris claro sobre blanco (1.30:1) en los temas oscuros.
+        color: "var(--pg-node-fg)",
         border: `1.5px solid ${color}`,
         borderRadius: 8,
         minWidth: 200,
         fontSize: 12,
         fontFamily: "system-ui",
-        boxShadow: "0 2px 6px rgba(0,0,0,.12)",
+        boxShadow: "0 2px 6px var(--pg-node-shadow)",
       }}
     >
       {/* Halo del perímetro + punto de enganche de cada relación. */}
@@ -210,7 +230,7 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
       <div
         style={{
           background: color,
-          color: "#fff",
+          color: "var(--pg-node-header-fg)",
           padding: "5px 8px",
           borderRadius: collapsed ? 6 : "6px 6px 0 0",
           display: "flex",
@@ -218,7 +238,7 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
           gap: 4,
         }}
       >
-        <span style={{ color: "rgba(255,255,255,.65)", fontSize: 11 }}>{t.schema_name}.</span>
+        <span style={{ color: "color-mix(in srgb, var(--pg-node-header-fg) 70%, transparent)", fontSize: 11 }}>{t.schema_name}.</span>
         <strong style={{ flex: 1 }}>{t.name}</strong>
         <span
           onClick={(e) => {
@@ -226,7 +246,7 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
             setRelMenu(!relMenu);
           }}
           title="Añadir tablas relacionadas…"
-          style={{ ...btn, background: relMenu ? "rgba(255,255,255,.25)" : undefined, borderRadius: 3 }}
+          style={{ ...btn, background: relMenu ? "color-mix(in srgb, var(--pg-node-header-fg) 25%, transparent)" : undefined, borderRadius: 3 }}
         >
           ⇲
         </span>
@@ -249,7 +269,7 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
               setEditCols(!editCols);
             }}
             title={editCols ? "Terminar edición de columnas" : "Ocultar/mostrar columnas"}
-            style={{ ...btn, background: editCols ? "rgba(255,255,255,.25)" : undefined, borderRadius: 3 }}
+            style={{ ...btn, background: editCols ? "color-mix(in srgb, var(--pg-node-header-fg) 25%, transparent)" : undefined, borderRadius: 3 }}
           >
             ✎
           </span>
@@ -274,10 +294,10 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
             top: 26,
             right: 4,
             zIndex: 10,
-            background: "#fff",
-            border: "1px solid #ccc",
+            background: "var(--pg-menu-bg)",
+            border: "1px solid var(--pg-menu-border)",
             borderRadius: 6,
-            boxShadow: "0 4px 12px rgba(0,0,0,.2)",
+            boxShadow: "0 4px 12px var(--pg-node-shadow)",
             minWidth: 210,
             overflow: "hidden",
           }}
@@ -296,9 +316,9 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                 setRelMenu(false);
                 onAddRelated(key, dir);
               }}
-              onMouseEnter={(e) => ((e.target as HTMLElement).style.background = "#eef3fb")}
+              onMouseEnter={(e) => ((e.target as HTMLElement).style.background = "var(--pg-menu-hover)")}
               onMouseLeave={(e) => ((e.target as HTMLElement).style.background = "")}
-              style={{ padding: "6px 10px", cursor: "pointer", color: "#222" }}
+              style={{ padding: "6px 10px", cursor: "pointer", color: "var(--pg-menu-fg)" }}
             >
               {label}
             </div>
@@ -307,13 +327,13 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
       )}
 
       {collapsed ? (
-        <div style={{ padding: "3px 10px", color: "#888", fontSize: 11 }}>
+        <div style={{ padding: "3px 10px", color: "var(--pg-node-muted)", fontSize: 11 }}>
           {t.columns.length} columnas{hidden.size > 0 ? ` · ${hidden.size} ocultas` : ""}
         </div>
       ) : (
         <div style={{ padding: "4px 0" }}>
           {editCols && (
-            <div style={{ padding: "2px 10px", color: "#888", fontSize: 11, fontStyle: "italic" }}>
+            <div style={{ padding: "2px 10px", color: "var(--pg-node-muted)", fontSize: 11, fontStyle: "italic" }}>
               Clic en una columna para ocultarla/mostrarla
             </div>
           )}
@@ -359,13 +379,22 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                   opacity: editCols && isHidden ? 0.35 : 1,
                   textDecoration: editCols && isHidden ? "line-through" : undefined,
                   background: picked
-                    ? "#fbbf24"
+                    ? "var(--pg-hl-pick)"
                     : highlighted.has(c.name)
-                      ? "#fde68a"
+                      ? "var(--pg-hl-mark)"
                       : joinHl.has(c.name)
-                        ? "#ede9fe"
+                        ? "var(--pg-hl-join)"
                         : undefined,
-                  boxShadow: picked ? "inset 0 0 0 1.5px #b45309" : undefined,
+                  // Un resaltado cambia el fondo, así que tiene que traer su
+                  // propio color de texto o el contraste depende del azar.
+                  color: picked
+                    ? "var(--pg-hl-pick-fg)"
+                    : highlighted.has(c.name)
+                      ? "var(--pg-hl-mark-fg)"
+                      : joinHl.has(c.name)
+                        ? "var(--pg-hl-join-fg)"
+                        : undefined,
+                  boxShadow: picked ? "inset 0 0 0 1.5px var(--pg-hl-pick-ring)" : undefined,
                   borderRadius: picked || marked ? 3 : undefined,
                   fontWeight: picked || marked ? 600 : undefined,
                 }}
@@ -374,7 +403,7 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                   style={{
                     width: 14,
                     textAlign: "center",
-                    color: !editCols && selfFkCols.has(c.name) ? "#7c3aed" : undefined,
+                    color: !editCols && selfFkCols.has(c.name) ? "var(--pg-hl-selffk)" : undefined,
                     fontWeight: !editCols && selfFkCols.has(c.name) ? 700 : undefined,
                   }}
                 >
@@ -391,14 +420,14 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                           : ""}
                 </span>
                 <span style={{ fontWeight: c.is_pk ? 600 : 400 }}>{c.name}</span>
-                <span style={{ color: "#999", marginLeft: "auto", fontSize: 11 }}>{c.data_type}</span>
+                <span style={{ color: "var(--pg-node-muted)", marginLeft: "auto", fontSize: 11 }}>{c.data_type}</span>
               </div>
             );
           })}
           {!editCols && (
             <div
               className="nodrag"
-              style={{ display: "flex", gap: 12, padding: "3px 10px 1px", fontSize: 11, borderTop: "1px solid #f0f0f0" }}
+              style={{ display: "flex", gap: 12, padding: "3px 10px 1px", fontSize: 11, borderTop: "1px solid var(--pg-node-divider)" }}
             >
               {truncated > 0 && (
                 <a
@@ -406,7 +435,7 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                     e.stopPropagation();
                     onCustomChange(key, { display: "all" });
                   }}
-                  style={{ cursor: "pointer", color: "#1a56b0" }}
+                  style={{ cursor: "pointer", color: "var(--pg-node-link)" }}
                   title="Mostrar todas las columnas"
                 >
                   ▾ Todas (+{truncated})
@@ -418,7 +447,7 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                     e.stopPropagation();
                     onCustomChange(key, { display: "default" });
                   }}
-                  style={{ cursor: "pointer", color: "#1a56b0" }}
+                  style={{ cursor: "pointer", color: "var(--pg-node-link)" }}
                   title="Volver a la vista por defecto"
                 >
                   ▴ Menos
@@ -429,12 +458,12 @@ export default function TableNode({ data }: NodeProps<TableNodeType>) {
                   e.stopPropagation();
                   onCustomChange(key, { display: display === "keys" ? "default" : "keys" });
                 }}
-                style={{ cursor: "pointer", color: display === "keys" ? "#b45309" : "#1a56b0" }}
+                style={{ cursor: "pointer", color: display === "keys" ? "var(--pg-node-link-on)" : "var(--pg-node-link)" }}
                 title={display === "keys" ? "Mostrar columnas normales" : "Contraer a solo claves (PK/FK)"}
               >
                 {display === "keys" ? "▦ Por defecto" : "🔑 Solo claves"}
               </a>
-              {hidden.size > 0 && <span style={{ color: "#bbb" }}>{hidden.size} ocultas</span>}
+              {hidden.size > 0 && <span style={{ color: "var(--pg-node-faint)" }}>{hidden.size} ocultas</span>}
             </div>
           )}
         </div>

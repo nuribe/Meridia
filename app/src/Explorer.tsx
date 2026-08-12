@@ -20,7 +20,6 @@ import ModeSwitch from "./ModeSwitch";
 import ThemeMenu from "./ThemeMenu";
 import QueryTab, { copyText } from "./QueryTab";
 import { SetBuilderSessionContext, type BuilderSession } from "./builderBridge";
-import { currentTheme, THEMES } from "./theme";
 
 function errText(e: unknown): string {
   const err = e as ApiError;
@@ -274,7 +273,7 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
     <div className="d-flex flex-column vh-100 bg-body-tertiary">
       <header
         className="d-flex align-items-center gap-2 px-3 py-2 bg-body flex-wrap"
-        style={{ borderBottom: "3px solid var(--pg-accent)" }}
+        style={{ borderBottom: "3px solid var(--pg-accent-text)" }}
       >
         <button
           className="btn btn-sm btn-outline-secondary"
@@ -389,7 +388,7 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
                       style={{
                         whiteSpace: "nowrap",
                         background: isActive ? "var(--pg-accent)" : "transparent",
-                        color: isActive ? "#fff" : "var(--bs-secondary-color)",
+                        color: isActive ? "var(--pg-accent-fg)" : "var(--bs-secondary-color)",
                         fontWeight: isActive ? 700 : 400,
                         border: isActive ? "1px solid var(--pg-accent)" : "1px solid transparent",
                         borderBottom: "none",
@@ -599,7 +598,7 @@ function SectionHeader({
         {title}
       </span>
       {count !== undefined && (
-        <span className="badge rounded-pill text-bg-light text-dark">{count}</span>
+        <span className="badge rounded-pill badge-neutral">{count}</span>
       )}
       {actions && <span className="ms-auto d-flex align-items-center gap-2">{actions}</span>}
     </div>
@@ -638,7 +637,7 @@ function MatchBadge({ kind }: { kind?: string }) {
   if (kind === "search_path") {
     return (
       <span
-        className="badge text-bg-light border fw-normal ms-2"
+        className="badge badge-neutral border fw-normal ms-2"
         title="Referencia sin calificar; resuelta a esta tabla por el search_path de la rutina"
       >
         sin calificar
@@ -788,7 +787,7 @@ function TableDetailView({
           {editing ? (
             <input
               className="form-control form-control-sm"
-              style={{ maxWidth: 480, borderLeft: "3px solid var(--pg-accent)" }}
+              style={{ maxWidth: 480, borderLeft: "3px solid var(--pg-accent-text)" }}
               placeholder="Comentario de la tabla…"
               title="Comentario de la tabla (COMMENT ON / MS_Description)"
               value={draftComment}
@@ -800,7 +799,7 @@ function TableDetailView({
                 className="px-2 py-1 rounded"
                 style={{
                   background: "var(--bs-tertiary-bg)",
-                  borderLeft: "3px solid var(--pg-accent)",
+                  borderLeft: "3px solid var(--pg-accent-text)",
                   fontSize: 14,
                 }}
                 title="Comentario de la tabla (COMMENT ON)"
@@ -1095,7 +1094,7 @@ function TableDetailView({
                     {r.source}
                   </a>{" "}
                   <code>({r.columns.join(", ")})</code> → <code>({r.ref_columns.join(", ")})</code>{" "}
-                  <span className="badge bg-info-subtle border border-info-subtle text-dark">{r.cardinality}</span>{" "}
+                  <span className="badge bg-info-subtle border border-info-subtle text-info-emphasis">{r.cardinality}</span>{" "}
                   <small className="text-body-secondary">{r.fk_name}</small>
                 </li>
               );
@@ -1115,7 +1114,7 @@ function TableDetailView({
                 <li key={v} className="list-group-item py-2 d-flex align-items-center gap-2">
                   <span>◉</span>
                   <span
-                    className="badge text-bg-light border font-monospace fw-normal"
+                    className="badge badge-neutral border font-monospace fw-normal"
                     title="Esquema al que pertenece la vista"
                   >
                     {sc}
@@ -1159,7 +1158,7 @@ function TableDetailView({
                       <td className="text-center fs-6">{r.kind === "procedure" ? "⚙" : "ƒ"}</td>
                       <td>
                         <span
-                          className="badge text-bg-light border font-monospace fw-normal"
+                          className="badge badge-neutral border font-monospace fw-normal"
                           title="Esquema al que pertenece la rutina"
                         >
                           {r.schema_name}
@@ -1192,7 +1191,7 @@ function TableDetailView({
                                 {prm.mode && prm.mode !== "IN" && (
                                   <span className="badge text-bg-warning">{prm.mode}</span>
                                 )}
-                                <span className="badge bg-primary-subtle border border-primary-subtle text-dark font-monospace">
+                                <span className="badge bg-primary-subtle border border-primary-subtle text-primary-emphasis font-monospace">
                                   {prm.name ?? `$${i + 1}`}
                                 </span>
                                 <code className="text-body-secondary small">{prm.type}</code>
@@ -1209,12 +1208,12 @@ function TableDetailView({
                         )}
                       </td>
                       <td>
-                        <span className="badge text-bg-light border">
+                        <span className="badge badge-neutral border">
                           {r.kind === "procedure" ? "procedimiento" : "función"}
                         </span>
                       </td>
                       <td>
-                        <span className="badge text-bg-light border">{r.language}</span>
+                        <span className="badge badge-neutral border">{r.language}</span>
                       </td>
                       <td>
                         <button
@@ -1249,7 +1248,7 @@ function TableDetailView({
             {table.indexes.map((ix) => (
               <li key={ix.name} className="list-group-item py-2">
                 <code>{ix.name}</code> ({ix.columns.join(", ")}){" "}
-                <span className="badge text-bg-light border">{ix.method}</span>
+                <span className="badge badge-neutral border">{ix.method}</span>
                 {ix.is_unique && <span className="badge text-bg-warning ms-1">UNIQUE</span>}
               </li>
             ))}
@@ -1318,7 +1317,6 @@ function SqlChangesModal({
   onClose: () => void;
 }) {
   const pal = sqlPalette();
-  const dark = THEMES.find((x) => x.id === currentTheme())?.bs === "dark";
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -1328,7 +1326,7 @@ function SqlChangesModal({
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 1060, background: "rgba(0,0,0,.6)" }}
+      style={{ position: "fixed", inset: 0, zIndex: 1060, background: "var(--pg-scrim)" }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
@@ -1351,7 +1349,7 @@ function SqlChangesModal({
           className="d-flex align-items-center gap-2 px-3 py-2 flex-shrink-0"
           style={{
             background: "var(--pg-grad)",
-            color: "#fff",
+            color: "var(--pg-grad-fg)",
           }}
         >
           <Bi name="pencil-square" size={15} />
@@ -1397,7 +1395,7 @@ function SqlChangesModal({
           </small>
           <span className="flex-grow-1" />
           <button
-            className={`btn btn-sm ${dark ? "btn-outline-light" : "btn-outline-secondary"}`}
+            className={`btn btn-sm btn-outline-neutral`}
             onClick={onClose}
           >
             <Bi name="x-lg" /> Cancelar
@@ -1684,7 +1682,6 @@ function CodeModal({
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const dark = THEMES.find((x) => x.id === currentTheme())?.bs === "dark";
   const pal = sqlPalette();
 
   useEffect(() => {
@@ -1716,7 +1713,7 @@ function CodeModal({
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 1060, background: "rgba(0,0,0,.6)" }}
+      style={{ position: "fixed", inset: 0, zIndex: 1060, background: "var(--pg-scrim)" }}
       onMouseDown={(e) => {
         downOnBackdrop.current = e.target === e.currentTarget;
       }}
@@ -1762,14 +1759,14 @@ function CodeModal({
           </span>
           <span className="flex-grow-1" />
           <button
-            className={`btn btn-sm ${copied ? "btn-success" : dark ? "btn-outline-light" : "btn-outline-secondary"}`}
+            className={`btn btn-sm ${copied ? "btn-success" : "btn-outline-neutral"}`}
             onClick={() => void copy()}
             disabled={loading}
             title="Copiar todo el código"
           >
             {copied ? "✓ Copiado" : "⧉ Copiar"}
           </button>
-          <button className={`btn-close${dark ? " btn-close-white" : ""}`} onClick={onClose} title="Cerrar (Esc)" />
+          <button className="btn-close" onClick={onClose} title="Cerrar (Esc)" />
         </div>
 
         {/* Cuerpo: editor con números de línea */}
@@ -1851,9 +1848,13 @@ const SQL_TYPES = new Set([
   "tsvector", "tsquery", "zone", "without",
 ]);
 
-// Paletas de sintaxis: una para temas oscuros y otra para claros, para que el
-// resaltado concuerde con el tema seleccionado (los fondos/bordes usan las
-// variables de Bootstrap --bs-*, que ya cambian con data-bs-theme).
+// Resaltado de sintaxis. Antes había dos paletas fijas en este archivo, una
+// "clara" y otra "oscura", elegidas leyendo el modo de Bootstrap. Ahora los
+// nueve colores son tokens: Océano y Violeta pueden afinar los suyos y el
+// resaltado deja de estar acoplado a si el tema es claro u oscuro.
+//
+// Se mantiene la forma de objeto (y no `className`) porque highlightSql
+// devuelve nodos con estilos en línea.
 interface SqlPalette {
   comment: string;
   string: string;
@@ -1866,37 +1867,24 @@ interface SqlPalette {
   dollar: string;
 }
 
-const SQL_DARK: SqlPalette = {
-  comment: "#6a9955",
-  string: "#e5c07b",
-  identQ: "#9cdcfe",
-  cast: "#4ec9b0",
-  number: "#d19a66",
-  keyword: "#f14c4c",
-  type: "#ffa657",
-  func: "#56b6c2",
-  dollar: "#c586c0",
+const SQL_PALETTE: SqlPalette = {
+  comment: "var(--pg-sql-comment)",
+  string: "var(--pg-sql-string)",
+  identQ: "var(--pg-sql-ident)",
+  cast: "var(--pg-sql-cast)",
+  number: "var(--pg-sql-number)",
+  keyword: "var(--pg-sql-keyword)",
+  type: "var(--pg-sql-type)",
+  func: "var(--pg-sql-func)",
+  dollar: "var(--pg-sql-dollar)",
 };
 
-const SQL_LIGHT: SqlPalette = {
-  comment: "#008000",
-  string: "#a31515",
-  identQ: "#0070c1",
-  cast: "#267f99",
-  number: "#098658",
-  keyword: "#0000ff",
-  type: "#267f99",
-  func: "#795e26",
-  dollar: "#af00db",
-};
-
-/** Devuelve la paleta acorde al tema activo (claro/oscuro). */
+/** Se conserva por compatibilidad con las llamadas existentes. */
 function sqlPalette(): SqlPalette {
-  const t = THEMES.find((x) => x.id === currentTheme());
-  return t?.bs === "dark" ? SQL_DARK : SQL_LIGHT;
+  return SQL_PALETTE;
 }
 
-function highlightSql(sql: string, p: SqlPalette = SQL_DARK): React.ReactNode[] {
+function highlightSql(sql: string, p: SqlPalette = SQL_PALETTE): React.ReactNode[] {
   const parts = sql.split(
     /(--[^\n]*|'(?:[^']|'')*'|"[^"]*"|\$\w*\$|::\w+|\b[\w$]+\b)/g
   );

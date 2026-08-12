@@ -359,14 +359,21 @@ function Canvas({ profileId, dbname, active, initial, onDone, onCancel }: Props)
           type: "smoothstep",
           className: isSel ? "pgdiag-flow" : undefined,
           label: isCross ? "CROSS JOIN" : j.join_type,
-          labelStyle: { fontSize: 11, fontWeight: 700, fill: isSel ? "#b45309" : "#6d28d9" },
-          labelBgStyle: { fill: "#fff", fillOpacity: 0.9 },
+          labelStyle: {
+            fontSize: 11,
+            fontWeight: 700,
+            fill: isSel ? "var(--pg-edge-sel)" : "var(--pg-edge-join)",
+          },
+          labelBgStyle: { fill: "var(--pg-edge-label-bg)", fillOpacity: 0.9 },
           style: {
-            stroke: isSel ? "#f59e0b" : "#8a63d2",
+            stroke: isSel ? "var(--pg-edge-sel)" : "var(--pg-edge-join)",
             strokeWidth: 2,
             strokeDasharray: isCross ? "6 4" : undefined,
           },
-          markerEnd: { type: MarkerType.ArrowClosed, color: isSel ? "#f59e0b" : "#8a63d2" },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: isSel ? "var(--pg-edge-sel)" : "var(--pg-edge-join)",
+          },
         };
       }),
     [joins, selected]
@@ -620,11 +627,11 @@ function Canvas({ profileId, dbname, active, initial, onDone, onCancel }: Props)
 
 const FLOW_CSS = `
 .react-flow__edge.pgdiag-flow .react-flow__edge-path {
-  stroke: #f59e0b !important;
+  stroke: var(--pg-edge-sel) !important;
   stroke-width: 3.5 !important;
   stroke-dasharray: 10 7;
   animation: pgdiagFlow .45s linear infinite;
-  filter: drop-shadow(0 0 4px rgba(245, 158, 11, .85));
+  filter: drop-shadow(0 0 4px rgba(var(--pg-edge-glow-sel), .85));
 }
 @keyframes pgdiagFlow { to { stroke-dashoffset: -17; } }
 `;

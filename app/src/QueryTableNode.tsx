@@ -34,8 +34,8 @@ const btn: React.CSSProperties = {
 const colHandle = (side: "left" | "right"): React.CSSProperties => ({
   width: 9,
   height: 9,
-  background: "#8a63d2",
-  border: "1.5px solid #fff",
+  background: "var(--pg-edge-join)",
+  border: "1.5px solid var(--pg-node-bg)",
   [side]: -5,
   borderRadius: 3,
 });
@@ -54,19 +54,20 @@ export default function QueryTableNode({ data }: NodeProps<QueryTableNodeType>) 
     <div
       style={{
         position: "relative",
-        background: "#fff",
+        background: "var(--pg-node-bg)",
+        color: "var(--pg-node-fg)",
         border: `1.5px solid ${color}`,
         borderRadius: 8,
         minWidth: 210,
         fontSize: 12,
         fontFamily: "system-ui",
-        boxShadow: "0 2px 6px rgba(0,0,0,.12)",
+        boxShadow: "0 2px 6px var(--pg-node-shadow)",
       }}
     >
       <div
         style={{
           background: color,
-          color: "#fff",
+          color: "var(--pg-node-header-fg)",
           padding: "5px 8px",
           borderRadius: "6px 6px 0 0",
           display: "flex",
@@ -74,7 +75,7 @@ export default function QueryTableNode({ data }: NodeProps<QueryTableNodeType>) 
           gap: 4,
         }}
       >
-        <span style={{ color: "rgba(255,255,255,.65)", fontSize: 11 }}>{t.schema_name}.</span>
+        <span style={{ color: "color-mix(in srgb, var(--pg-node-header-fg) 70%, transparent)", fontSize: 11 }}>{t.schema_name}.</span>
         <strong style={{ flex: 1 }}>{t.name}</strong>
         <span
           onClick={(e) => {
@@ -82,7 +83,7 @@ export default function QueryTableNode({ data }: NodeProps<QueryTableNodeType>) 
             setRelMenu(!relMenu);
           }}
           title="Añadir tablas relacionadas…"
-          style={{ ...btn, background: relMenu ? "rgba(255,255,255,.25)" : undefined, borderRadius: 3 }}
+          style={{ ...btn, background: relMenu ? "color-mix(in srgb, var(--pg-node-header-fg) 25%, transparent)" : undefined, borderRadius: 3 }}
         >
           ⇲
         </span>
@@ -106,10 +107,10 @@ export default function QueryTableNode({ data }: NodeProps<QueryTableNodeType>) 
             top: 26,
             right: 4,
             zIndex: 10,
-            background: "#fff",
-            border: "1px solid #ccc",
+            background: "var(--pg-menu-bg)",
+            border: "1px solid var(--pg-menu-border)",
             borderRadius: 6,
-            boxShadow: "0 4px 12px rgba(0,0,0,.2)",
+            boxShadow: "0 4px 12px var(--pg-node-shadow)",
             minWidth: 210,
             overflow: "hidden",
           }}
@@ -128,9 +129,9 @@ export default function QueryTableNode({ data }: NodeProps<QueryTableNodeType>) 
                 setRelMenu(false);
                 onAddRelated(key, dir);
               }}
-              onMouseEnter={(e) => ((e.target as HTMLElement).style.background = "#eef3fb")}
+              onMouseEnter={(e) => ((e.target as HTMLElement).style.background = "var(--pg-menu-hover)")}
               onMouseLeave={(e) => ((e.target as HTMLElement).style.background = "")}
-              style={{ padding: "6px 10px", cursor: "pointer", color: "#222" }}
+              style={{ padding: "6px 10px", cursor: "pointer", color: "var(--pg-menu-fg)" }}
             >
               {label}
             </div>
@@ -148,7 +149,8 @@ export default function QueryTableNode({ data }: NodeProps<QueryTableNodeType>) 
               gap: 6,
               padding: "2px 12px",
               alignItems: "baseline",
-              background: joined.has(c.name) ? "#ede9fe" : undefined,
+              background: joined.has(c.name) ? "var(--pg-hl-join)" : undefined,
+              color: joined.has(c.name) ? "var(--pg-hl-join-fg)" : undefined,
               fontWeight: joined.has(c.name) ? 600 : undefined,
             }}
           >
@@ -169,14 +171,14 @@ export default function QueryTableNode({ data }: NodeProps<QueryTableNodeType>) 
               {c.is_pk ? "🔑" : fkCols.has(c.name) ? "→" : ""}
             </span>
             <span style={{ fontWeight: c.is_pk ? 600 : 400 }}>{c.name}</span>
-            <span style={{ color: "#999", marginLeft: "auto", fontSize: 11 }}>
+            <span style={{ color: "var(--pg-node-muted)", marginLeft: "auto", fontSize: 11 }}>
               {c.data_type}
               {c.is_nullable ? "" : " ·"}
             </span>
           </div>
         ))}
         {truncated > 0 && (
-          <div style={{ padding: "2px 12px", color: "#999", fontSize: 11, fontStyle: "italic" }}>
+          <div style={{ padding: "2px 12px", color: "var(--pg-node-muted)", fontSize: 11, fontStyle: "italic" }}>
             +{truncated} columnas más
           </div>
         )}
