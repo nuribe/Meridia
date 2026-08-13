@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import { api, health, type ApiError, type AuthMethod, type DatabaseInfo, type DbEngine, type PgDiagFile, type Profile } from "./api/client";
 import Explorer from "./Explorer";
 import DiagramView, { OfflineDiagramView } from "./DiagramView";
+import ActivityView from "./ActivityView";
+import type { WorkMode } from "./ModeSwitch";
 import ThemeMenu from "./ThemeMenu";
 import { openTextFile } from "./files";
 import { APP_VERSION, IS_DEV_BUILD } from "./version";
@@ -13,7 +15,7 @@ import { registerZoomShortcuts } from "./zoom";
 type View =
   | { name: "profiles" }
   | { name: "databases"; profile: Profile }
-  | { name: "workbench"; profile: Profile; dbname: string; mode: "explorer" | "diagram" }
+  | { name: "workbench"; profile: Profile; dbname: string; mode: WorkMode }
   | { name: "offline"; doc: PgDiagFile };
 
 function errText(e: unknown): string {
@@ -68,7 +70,8 @@ export default function App() {
           onOpen={(dbname) => setView({ name: "workbench", profile: view.profile, dbname, mode: "explorer" })}
         />
       );
-    case "workbench":
+    case "workbench": {
+      const go = (mode: WorkMode) => setView({ ...view, mode });
       return (
         <>
           <div style={{ display: view.mode === "explorer" ? "block" : "none", height: "100vh" }}>
@@ -78,18 +81,29 @@ export default function App() {
               allowWrites={view.profile.allow_writes ?? false}
               dbname={view.dbname}
               onBack={() => setView({ name: "databases", profile: view.profile })}
-              onOpenDiagram={() => setView({ ...view, mode: "diagram" })}
+              onChangeMode={go}
             />
           </div>
           <div style={{ display: view.mode === "diagram" ? "block" : "none", height: "100vh" }}>
             <DiagramView
               profileId={view.profile.id}
               dbname={view.dbname}
-              onBack={() => setView({ ...view, mode: "explorer" })}
+              allowWrites={view.profile.allow_writes ?? false}
+              onBack={() => setView({ name: "databases", profile: view.profile })}
+              onChangeMode={go}
             />
           </div>
+          {/* La bitácora MCP no depende de la base abierta, pero la vista vive
+              dentro del workbench para compartir el conmutador de modo. Se monta
+              solo al entrar: sondear cada 1,5 s de fondo no tendría sentido. */}
+          {view.mode === "activity" && (
+            <div style={{ height: "100vh" }}>
+              <ActivityView onChangeMode={go} />
+            </div>
+          )}
         </>
       );
+    }
     case "offline":
       return <OfflineDiagramView doc={view.doc} onBack={() => setView({ name: "profiles" })} />;
   }

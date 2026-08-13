@@ -16,10 +16,11 @@ import {
 } from "./api/client";
 import ObjectTree, { KIND_ICON, KIND_LABEL } from "./ObjectTree";
 import { buildAlterScript, draftProblems, type DraftColumn } from "./ddl";
-import ModeSwitch from "./ModeSwitch";
-import ThemeMenu from "./ThemeMenu";
+import ConnectionBar from "./ConnectionBar";
+import type { WorkMode } from "./ModeSwitch";
 import QueryTab, { copyText } from "./QueryTab";
 import { SetBuilderSessionContext, type BuilderSession } from "./builderBridge";
+import { highlightSql, sqlPalette } from "./sqlHighlight";
 
 function errText(e: unknown): string {
   const err = e as ApiError;
@@ -32,26 +33,6 @@ function errText(e: unknown): string {
  * Se muestra siempre, también en solo lectura: saber que NO se puede escribir
  * es tan útil como lo contrario, y su ausencia sería ambigua.
  */
-function WriteModeBadge({ allowWrites }: { allowWrites: boolean }) {
-  // Ojo: .badge fija color:#fff, así que todo badge necesita una utilidad de
-  // color de texto explícita o queda invisible sobre fondo claro.
-  return allowWrites ? (
-    <span
-      className="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-semibold"
-      title="Esta conexión permite INSERT, UPDATE, DELETE y DDL desde el editor de consultas. Un UPDATE o DELETE sin WHERE pedirá confirmación."
-    >
-      ✎ escritura
-    </span>
-  ) : (
-    <span
-      className="badge bg-body-secondary text-body-secondary border fw-normal"
-      title="Esta conexión es un visor: solo SELECT y similares. Actívala con «Permitir escritura» al editar el perfil."
-    >
-      🔒 solo lectura
-    </span>
-  );
-}
-
 interface Detail {
   table: TableDetail;
   referenced_by: RelationshipInfo[];
@@ -92,10 +73,10 @@ interface Props {
   allowWrites: boolean;
   dbname: string;
   onBack: () => void;
-  onOpenDiagram: () => void;
+  onChangeMode: (m: WorkMode) => void;
 }
 
-export default function Explorer({ profileId, engine, allowWrites, dbname, onBack, onOpenDiagram }: Props) {
+export default function Explorer({ profileId, engine, allowWrites, dbname, onBack, onChangeMode }: Props) {
   const [summary, setSummary] = useState<IntrospectSummary | null>(null);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -271,37 +252,15 @@ export default function Explorer({ profileId, engine, allowWrites, dbname, onBac
   return (
     <SetBuilderSessionContext.Provider value={setBuilderSession}>
     <div className="d-flex flex-column vh-100 bg-body-tertiary">
-      <header
-        className="d-flex align-items-center gap-2 px-3 py-2 bg-body flex-wrap"
-        style={{ borderBottom: "3px solid var(--pg-accent-text)" }}
-      >
-        <button
-          className="btn btn-sm btn-outline-secondary"
-          onClick={onBack}
-          title="Volver a la lista de bases de datos"
-        >
-          ←
-        </button>
-        <ModeSwitch mode="explorer" onChange={() => onOpenDiagram()} />
-        <span className="fw-semibold fs-6 ms-1">🗄 {dbname}</span>
-        <WriteModeBadge allowWrites={allowWrites} />
-        {summary && (
-          <small className="text-body-secondary">
-            {summary.schemas.length} schemas · {summary.object_count} objetos ·{" "}
-            {summary.relationship_count} relaciones · snapshot{" "}
-            {new Date(summary.created_at).toLocaleTimeString()}
-          </small>
-        )}
-        <span className="flex-grow-1" />
-        <button
-          className="btn btn-sm btn-outline-secondary"
-          onClick={() => void load(true)}
-          title="Re-introspectar la base de datos (refresca el snapshot)"
-        >
-          ⟳
-        </button>
-        <ThemeMenu />
-      </header>
+      <ConnectionBar
+        mode="explorer"
+        dbname={dbname}
+        allowWrites={allowWrites}
+        summary={summary}
+        onBack={onBack}
+        onChangeMode={onChangeMode}
+        onRefresh={() => void load(true)}
+      />
 
       {error && (
         <div className="alert alert-danger rounded-0 py-2 px-3 mb-0 d-flex">
@@ -1817,109 +1776,4 @@ function CodeModal({
       </div>
     </div>
   );
-}
-
-// --- Resaltado de sintaxis SQL (vistas y código de rutinas) ---
-
-const SQL_KEYWORDS = new Set([
-  "select", "from", "where", "join", "left", "right", "inner", "outer", "full",
-  "cross", "lateral", "on", "using", "group", "by", "order", "having", "union",
-  "intersect", "except", "all", "distinct", "as", "and", "or", "not", "null",
-  "case", "when", "then", "else", "end", "limit", "offset", "with", "recursive",
-  "exists", "in", "is", "like", "ilike", "similar", "between", "asc", "desc",
-  "nulls", "first", "last", "true", "false", "cast", "over", "partition",
-  "window", "filter", "values", "returning",
-  "insert", "into", "update", "delete", "set", "create", "replace", "function",
-  "procedure", "returns", "return", "language", "declare", "begin", "loop",
-  "while", "foreach", "raise", "notice", "exception", "perform", "execute",
-  "immutable", "stable", "volatile", "strict", "security", "definer", "invoker",
-  "cost", "setof", "out", "inout", "variadic", "default", "call", "commit",
-  "rollback", "constant", "trigger", "before", "after", "each", "row",
-  "if", "elsif", "then", "get", "stacked", "diagnostics", "others", "sqlerrm",
-]);
-
-const SQL_TYPES = new Set([
-  "integer", "bigint", "smallint", "int", "int2", "int4", "int8", "serial",
-  "bigserial", "text", "boolean", "bool", "numeric", "decimal", "character",
-  "varying", "varchar", "char", "timestamp", "timestamptz", "date", "time",
-  "timetz", "interval", "double", "precision", "real", "float4", "float8",
-  "money", "json", "jsonb", "uuid", "bytea", "xml", "inet", "cidr", "macaddr",
-  "bit", "void", "record", "anyelement", "anyarray", "regclass", "name", "oid",
-  "tsvector", "tsquery", "zone", "without",
-]);
-
-// Resaltado de sintaxis. Antes había dos paletas fijas en este archivo, una
-// "clara" y otra "oscura", elegidas leyendo el modo de Bootstrap. Ahora los
-// nueve colores son tokens: Océano y Violeta pueden afinar los suyos y el
-// resaltado deja de estar acoplado a si el tema es claro u oscuro.
-//
-// Se mantiene la forma de objeto (y no `className`) porque highlightSql
-// devuelve nodos con estilos en línea.
-interface SqlPalette {
-  comment: string;
-  string: string;
-  identQ: string;
-  cast: string;
-  number: string;
-  keyword: string;
-  type: string;
-  func: string;
-  dollar: string;
-}
-
-const SQL_PALETTE: SqlPalette = {
-  comment: "var(--pg-sql-comment)",
-  string: "var(--pg-sql-string)",
-  identQ: "var(--pg-sql-ident)",
-  cast: "var(--pg-sql-cast)",
-  number: "var(--pg-sql-number)",
-  keyword: "var(--pg-sql-keyword)",
-  type: "var(--pg-sql-type)",
-  func: "var(--pg-sql-func)",
-  dollar: "var(--pg-sql-dollar)",
-};
-
-/** Se conserva por compatibilidad con las llamadas existentes. */
-function sqlPalette(): SqlPalette {
-  return SQL_PALETTE;
-}
-
-function highlightSql(sql: string, p: SqlPalette = SQL_PALETTE): React.ReactNode[] {
-  const parts = sql.split(
-    /(--[^\n]*|'(?:[^']|'')*'|"[^"]*"|\$\w*\$|::\w+|\b[\w$]+\b)/g
-  );
-  return parts.map((tok, i) => {
-    if (!tok) return null;
-    if (tok.startsWith("--")) {
-      return <span key={i} style={{ color: p.comment, fontStyle: "italic" }}>{tok}</span>;
-    }
-    if (tok.startsWith("'")) {
-      return <span key={i} style={{ color: p.string }}>{tok}</span>;
-    }
-    if (tok.startsWith('"')) {
-      return <span key={i} style={{ color: p.identQ }}>{tok}</span>;
-    }
-    if (/^\$\w*\$$/.test(tok)) {
-      return <span key={i} style={{ color: p.dollar, fontWeight: 600 }}>{tok}</span>;
-    }
-    if (tok.startsWith("::")) {
-      return <span key={i} style={{ color: p.cast }}>{tok}</span>;
-    }
-    if (/^\d+(\.\d+)?$/.test(tok)) {
-      return <span key={i} style={{ color: p.number }}>{tok}</span>;
-    }
-    const lower = tok.toLowerCase();
-    if (SQL_KEYWORDS.has(lower)) {
-      return <span key={i} style={{ color: p.keyword, fontWeight: 600 }}>{tok}</span>;
-    }
-    if (SQL_TYPES.has(lower)) {
-      return <span key={i} style={{ color: p.type }}>{tok}</span>;
-    }
-    // Llamada a función: identificador seguido de "(" en el tramo siguiente
-    const next = parts[i + 1];
-    if (/^[a-z_][\w$]*$/i.test(tok) && next && next.trimStart().startsWith("(")) {
-      return <span key={i} style={{ color: p.func }}>{tok}</span>;
-    }
-    return tok;
-  });
 }

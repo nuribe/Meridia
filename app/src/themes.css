@@ -17,9 +17,13 @@
      --pg-accent-text  el mismo acento pero legible SOBRE el fondo del tema.
                        Para enlaces, iconos, bordes y estados inactivos.
 
-   `-accent` es el modo Explorador y `-accent2` el modo Diagramas. En los cuatro
-   temas se sigue la misma regla: Explorador frío (azul/teal/violeta), Diagramas
-   cálido (rosa/ámbar). No es solo estética — es la única forma de que el par
+   `-accent` es el modo Explorador, `-accent2` el modo Diagramas y `-accent3`
+   la vista Actividad IA. En los cuatro temas se sigue la misma regla:
+   Explorador frío (azul/teal/violeta), Diagramas cálido (rosa/ámbar) y
+   Actividad verde — el tercer polo, que es el único tono que sobrevive a las
+   tres dicromacías estando ya ocupados el frío y el cálido. En los temas
+   claros hay que irse a un verde bosque oscuro: con un azul y un rosa a media
+   luminancia, el tercer color solo se separa bajando de claridad. No es solo estética — es la única forma de que el par
    siga siendo distinguible con daltonismo. Azul contra violeta, que es lo que
    había antes en Claro y Oscuro, da ΔE 0.3 bajo deuteranopia: dos colores
    literalmente idénticos para ~6 % de los hombres. Océano era peor todavía:
@@ -50,6 +54,9 @@
   --pg-accent2: #be185d;
   --pg-accent2-fg: #ffffff;
   --pg-accent2-text: #be185d;
+  --pg-accent3: #1b4d2f;
+  --pg-accent3-fg: #ffffff;
+  --pg-accent3-text: #1b4d2f;
   --pg-grad: linear-gradient(90deg, #0f2d5c, #1d4ed8);
   --pg-grad-fg: #ffffff;
 
@@ -158,6 +165,9 @@
   --pg-accent2: #b45309;
   --pg-accent2-fg: #ffffff;
   --pg-accent2-text: #9a4708;
+  --pg-accent3: #17401f;
+  --pg-accent3-fg: #ffffff;
+  --pg-accent3-text: #17401f;
   --pg-grad: linear-gradient(90deg, #083344, #0e7490);
   --pg-grad-fg: #ffffff;
 
@@ -258,6 +268,9 @@
   --pg-accent2: #be185d;
   --pg-accent2-fg: #ffffff;
   --pg-accent2-text: #f472b6;
+  --pg-accent3: #15803d;
+  --pg-accent3-fg: #ffffff;
+  --pg-accent3-text: #6ee7b7;
   --pg-grad: linear-gradient(90deg, #14213f, #1d4ed8);
   --pg-grad-fg: #ffffff;
 
@@ -361,6 +374,9 @@
   --pg-accent2: #be185d;
   --pg-accent2-fg: #ffffff;
   --pg-accent2-text: #f79ac0;
+  --pg-accent3: #15803d;
+  --pg-accent3-fg: #ffffff;
+  --pg-accent3-text: #86efac;
   --pg-grad: linear-gradient(90deg, #33146b, #6d28d9);
   --pg-grad-fg: #ffffff;
 

@@ -20,6 +20,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   Background,
@@ -41,6 +42,7 @@ import {
   diagramsApi,
   type ApiError,
   type DiagramNote,
+  type IntrospectSummary,
   type DiagramSummary,
   type PgDiagFile,
   type RelationshipInfo,
@@ -55,7 +57,8 @@ import RelEdge from "./RelEdge";
 import SelfLoopEdge from "./SelfLoopEdge";
 import NoteNode, { NOTE_PALETTE } from "./NoteNode";
 import ObjectTree, { DND_MIME } from "./ObjectTree";
-import ModeSwitch from "./ModeSwitch";
+import ConnectionBar from "./ConnectionBar";
+import type { WorkMode } from "./ModeSwitch";
 import ThemeMenu from "./ThemeMenu";
 import { openTextFile, saveFile, saveTextFile, pickDirectory } from "./files";
 
@@ -145,6 +148,10 @@ interface CanvasProps {
   onCreateViewDiagram: (viewKey: string) => void;
   onTitleChange: (title: string) => void;
   onError: (msg: string) => void;
+  /** Barra de pestañas del workspace. Va DENTRO de la columna del lienzo para
+      que el árbol empiece justo bajo la barra de conexión, como en Explorador;
+      si estuviera fuera haría falta un hueco vacío del ancho del árbol. */
+  tabsSlot?: ReactNode;
 }
 
 function DiagramCanvas({
@@ -157,6 +164,7 @@ function DiagramCanvas({
   onCreateViewDiagram,
   onTitleChange,
   onError,
+  tabsSlot,
 }: CanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [rels, setRels] = useState<RelationshipInfo[]>([]);
@@ -1005,6 +1013,7 @@ function DiagramCanvas({
       )}
 
       <div className="d-flex flex-column flex-grow-1" style={{ minWidth: 0 }}>
+      {tabsSlot}
       {/* Menú del diagrama, alineado a la derecha sobre el lienzo */}
       <div className="d-flex align-items-center gap-2 px-3 py-2 bg-body border-bottom flex-wrap justify-content-end">
         <input
@@ -1230,7 +1239,11 @@ function DiagramCanvas({
 interface Props {
   profileId: string;
   dbname: string;
+  /** Solo para la insignia de la barra: el lienzo nunca escribe. */
+  allowWrites: boolean;
+  /** Volver a la lista de bases de datos, igual que en Explorador. */
   onBack: () => void;
+  onChangeMode: (m: WorkMode) => void;
 }
 
 interface Tab {
@@ -1280,19 +1293,30 @@ export function OfflineDiagramView({ doc, onBack }: { doc: PgDiagFile; onBack: (
   );
 }
 
-export default function DiagramView({ profileId, dbname, onBack }: Props) {
+export default function DiagramView({ profileId, dbname, allowWrites, onBack, onChangeMode }: Props) {
   const [tabs, setTabs] = useState<Tab[]>([{ id: 1, title: "Diagrama 1" }]);
   const [active, setActive] = useState(1);
   const [schemas, setSchemas] = useState<SchemaInfo[]>([]);
+  // El snapshot completo, no solo sus schemas: la barra de conexión muestra el
+  // recuento de objetos y relaciones, igual que en Explorador.
+  const [summary, setSummary] = useState<IntrospectSummary | null>(null);
   const [error, setError] = useState("");
   const nextId = useRef(2);
 
-  useEffect(() => {
-    api
-      .introspect(profileId, dbname)
-      .then((s) => setSchemas(s.schemas))
-      .catch((e) => setError(errText(e)));
-  }, [profileId, dbname]);
+  const cargar = useCallback(
+    (refrescar = false) => {
+      const p = refrescar
+        ? api.refresh(profileId, dbname)
+        : api.introspect(profileId, dbname);
+      p.then((s) => {
+        setSummary(s);
+        setSchemas(s.schemas);
+      }).catch((e) => setError(errText(e)));
+    },
+    [profileId, dbname]
+  );
+
+  useEffect(() => cargar(), [cargar]);
 
   function addTab() {
     const id = nextId.current++;
@@ -1319,17 +1343,12 @@ export default function DiagramView({ profileId, dbname, onBack }: Props) {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, title } : t)));
   }
 
-  return (
-    <div className="d-flex flex-column vh-100 bg-body-tertiary">
-      <style>{FLOW_CSS}</style>
-      <header className="d-flex align-items-end bg-body border-bottom pt-2">
-        {/* Columna izquierda con el mismo ancho que el árbol: las pestañas
-            comienzan alineadas con el lienzo */}
-        <div className="px-3 pb-2 flex-shrink-0 border-end d-flex align-items-center" style={{ width: 300 }}>
-          <ModeSwitch mode="diagram" onChange={() => onBack()} />
-        </div>
+  // Se pasa al lienzo activo en vez de pintarse arriba del todo: así las
+  // pestañas quedan a la derecha del árbol, a la altura de su buscador.
+  const barraPestanas = (
+    <header className="d-flex align-items-end bg-body border-bottom pt-2 ps-3">
         <ul
-          className="nav nav-tabs border-bottom-0 flex-nowrap flex-grow-1 ps-3"
+          className="nav nav-tabs border-bottom-0 flex-nowrap flex-grow-1"
           style={{ overflowX: "auto", overflowY: "hidden" }}
         >
           {tabs.map((t) => {
@@ -1376,10 +1395,21 @@ export default function DiagramView({ profileId, dbname, onBack }: Props) {
             </button>
           </li>
         </ul>
-        <div className="pb-2 pe-3">
-          <ThemeMenu />
-        </div>
-      </header>
+    </header>
+  );
+
+  return (
+    <div className="d-flex flex-column vh-100 bg-body-tertiary">
+      <style>{FLOW_CSS}</style>
+      <ConnectionBar
+        mode="diagram"
+        dbname={dbname}
+        allowWrites={allowWrites}
+        summary={summary}
+        onBack={onBack}
+        onChangeMode={onChangeMode}
+        onRefresh={() => cargar(true)}
+      />
 
       {error && (
         <div className="alert alert-danger rounded-0 py-2 px-3 mb-0 d-flex">
@@ -1407,6 +1437,7 @@ export default function DiagramView({ profileId, dbname, onBack }: Props) {
               onCreateViewDiagram={addTabForView}
               onTitleChange={(title) => renameTab(t.id, title)}
               onError={setError}
+              tabsSlot={active === t.id ? barraPestanas : null}
             />
           </ReactFlowProvider>
         </div>

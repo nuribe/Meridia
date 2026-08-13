@@ -1,3 +1,3 @@
-from pg_diagrammer.main import main
+from pg_diagrammer.cli import main
 
 main()

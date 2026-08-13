@@ -70,10 +70,13 @@ const CHECKS = [
   // Acentos: relleno y variante de texto
   ["texto sobre relleno acento", "--pg-accent-fg", "--pg-accent"],
   ["texto sobre relleno acento2", "--pg-accent2-fg", "--pg-accent2"],
+  ["texto sobre relleno acento3", "--pg-accent3-fg", "--pg-accent3"],
   ["enlace/acento sobre el cuerpo", "--pg-accent-text", "--bs-body-bg"],
   ["enlace/acento2 sobre el cuerpo", "--pg-accent2-text", "--bs-body-bg"],
+  ["enlace/acento3 sobre el cuerpo", "--pg-accent3-text", "--bs-body-bg"],
   ["acento sobre fondo terciario", "--pg-accent-text", "--bs-tertiary-bg"],
   ["acento2 sobre fondo terciario", "--pg-accent2-text", "--bs-tertiary-bg"],
+  ["acento3 sobre fondo terciario", "--pg-accent3-text", "--bs-tertiary-bg"],
 
   // Tarjetas del lienzo — aquí estaba el fallo de 1.30:1
   ["nombre de columna", "--pg-node-fg", "--pg-node-bg"],
@@ -134,9 +137,13 @@ const CHECKS = [
 ];
 
 /**
- * Además de contrastar contra el fondo, los dos acentos deben distinguirse
- * ENTRE SÍ: son los que codifican modo Explorador vs. modo Diagramas. Sin esta
- * comprobación, Océano volvía a tener dos teals casi idénticos.
+ * Además de contrastar contra el fondo, los tres acentos deben distinguirse
+ * ENTRE SÍ: son los que codifican Explorador vs. Diagramas vs. Actividad IA.
+ * Sin esta comprobación, Océano volvía a tener dos teals casi idénticos.
+ *
+ * Se comprueban los TRES pares, no solo uno: con un tercer acento en juego, el
+ * error fácil es elegir un verde que se distinga del azul y olvidar que bajo
+ * deuteranopia colisiona con el ámbar.
  *
  * ΔE2000 >= 20 es la frontera habitual de "colores claramente distintos" (por
  * comparar: ~2.3 es el umbral en el que un ojo entrenado empieza a notar
@@ -217,27 +224,35 @@ for (const [theme] of Object.entries(THEMES)) {
     );
   }
 
-  const a = resolve(theme, "--pg-accent-text");
-  const b = resolve(theme, "--pg-accent2-text");
+  const PAIRS = [
+    ["1↔2", "--pg-accent-text", "--pg-accent2-text"],
+    ["1↔3", "--pg-accent-text", "--pg-accent3-text"],
+    ["2↔3", "--pg-accent2-text", "--pg-accent3-text"],
+  ];
 
-  const de = deltaE2000(a, b);
-  const okDe = de >= MIN_DELTA_E;
-  if (!okDe) failures++;
-  console.log(
-    `${okDe ? "  ok  " : " FALLA"} ${"acentos distinguibles (ΔE2000)".padEnd(34)} ${a} / ${b}  ` +
-      `${de.toFixed(1).padStart(6)}    (min ${MIN_DELTA_E})`
-  );
+  for (const [label, tokA, tokB] of PAIRS) {
+    const a = resolve(theme, tokA);
+    const b = resolve(theme, tokB);
 
-  for (const kind of Object.keys(CVD)) {
-    const sa = simulate(a, kind);
-    const sb = simulate(b, kind);
-    const d = deltaE2000(sa, sb);
-    const ok = d >= MIN_DELTA_E_CVD;
-    if (!ok) failures++;
+    const de = deltaE2000(a, b);
+    const okDe = de >= MIN_DELTA_E;
+    if (!okDe) failures++;
     console.log(
-      `${ok ? "  ok  " : " FALLA"} ${`acentos con ${kind}`.padEnd(34)} ${sa} / ${sb}  ` +
-        `${d.toFixed(1).padStart(6)}    (min ${MIN_DELTA_E_CVD})`
+      `${okDe ? "  ok  " : " FALLA"} ${`acentos ${label} distinguibles (ΔE2000)`.padEnd(34)} ${a} / ${b}  ` +
+        `${de.toFixed(1).padStart(6)}    (min ${MIN_DELTA_E})`
     );
+
+    for (const kind of Object.keys(CVD)) {
+      const sa = simulate(a, kind);
+      const sb = simulate(b, kind);
+      const d = deltaE2000(sa, sb);
+      const ok = d >= MIN_DELTA_E_CVD;
+      if (!ok) failures++;
+      console.log(
+        `${ok ? "  ok  " : " FALLA"} ${`acentos ${label} con ${kind}`.padEnd(34)} ${sa} / ${sb}  ` +
+          `${d.toFixed(1).padStart(6)}    (min ${MIN_DELTA_E_CVD})`
+      );
+    }
   }
 }
 

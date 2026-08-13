@@ -1,12 +1,22 @@
-"""Exploración de metadatos de una base de datos concreta (vía perfil)."""
+"""Exploración de metadatos de una base de datos concreta (vía perfil).
+
+Estas rutas son el **adaptador HTTP** de `services/catalog.py`: traducen la
+petición, llaman al servicio y envuelven el resultado en el contrato REST. La
+lógica de catálogo no vive aquí — vive en el servicio, para que el servidor
+MCP pueda usar exactamente la misma (ver docs/mcp.md).
+
+Los fallos de negocio se lanzan como `ServiceError` y los convierte en
+respuesta el manejador registrado en `api/app.py`; por eso las rutas de
+catálogo no llevan try/except. La ejecución de consultas, el plan y la página
+de datos sí conservan el suyo: son operaciones sobre la base del usuario, con
+sus propios errores de SQL y sus propias reglas de escritura.
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 import json
-import math
-import re
 
 import psycopg
 from psycopg import sql as pgsql
@@ -17,17 +27,26 @@ from pg_diagrammer.api.routes.profiles import _error, password_missing_error
 from pg_diagrammer.connections import manager
 from pg_diagrammer.connections.profiles import PasswordUnavailable as _PU  # noqa: F401
 from pg_diagrammer.connections.profiles import PasswordUnavailable
-from pg_diagrammer.domain.models import Engine, ObjectSummary, QuerySpec, Snapshot, TableKind
+from pg_diagrammer.domain.models import Engine, QuerySpec, Snapshot, TableKind
 from pg_diagrammer.domain import explain as explain_plan
 from pg_diagrammer.domain import query_builder
-from pg_diagrammer.domain.sql_script import split_statements
+from pg_diagrammer.domain.sql_script import (
+    first_keyword,
+    is_read_statement,
+    missing_where,
+    split_statements,
+)
 from pg_diagrammer.errors import ApiError, DB_EXCEPTIONS, classify_db_error, classify_pg_error  # noqa: F401
-from pg_diagrammer.export.generators import to_dbml, to_mermaid
-from pg_diagrammer.introspection import introspector, mssql_introspector
-from pg_diagrammer.introspection.introspector import diff_snapshots, routines_using
-from pg_diagrammer.introspection.view_joins import collect_relations, parse_view_joins
+from pg_diagrammer.services import catalog
+from pg_diagrammer.services.query import PlanTooLarge, mssql_plan, postgres_plan
+from pg_diagrammer.services.values import MAX_CELL_CHARS, clip, jsonable  # noqa: F401
 
 router = APIRouter(tags=["db"])
+
+
+def _stores(request: Request):
+    """Los dos stores que necesita casi toda ruta de catálogo."""
+    return request.app.state.profiles, request.app.state.snapshots
 
 
 def _ms_ident(name: str) -> str:
@@ -35,36 +54,10 @@ def _ms_ident(name: str) -> str:
     return "[" + name.replace("]", "]]") + "]"
 
 
-_SQL_COMMENTS = re.compile(r"(--[^\n]*)|(/\*.*?\*/)", re.S)
-_SQL_LITERALS = re.compile(r"'(?:[^']|'')*'", re.S)
-
-# Sentencias que no modifican datos ni estructura. Es la frontera entre lo que
-# puede ejecutar un perfil normal y lo que exige `allow_writes`.
-READ_KEYWORDS = ("SELECT", "WITH", "SHOW", "EXPLAIN", "TABLE", "VALUES", "DESCRIBE")
-
-
-def _first_keyword(sql_text: str) -> str:
-    """Primera palabra clave de la sentencia, ignorando comentarios."""
-    stripped = _SQL_COMMENTS.sub(" ", sql_text).lstrip().lstrip("(").lstrip()
-    parts = stripped.split(None, 1)
-    return parts[0].upper() if parts else ""
-
-
-def is_read_statement(sql_text: str) -> bool:
-    """¿La sentencia es de solo lectura?"""
-    return _first_keyword(sql_text) in READ_KEYWORDS
-
-
-def missing_where(sql_text: str) -> bool:
-    """UPDATE o DELETE sin WHERE, que es el error destructivo más habitual.
-
-    Se ignoran comentarios y literales para que un `WHERE` dentro de una
-    cadena no cuente como cláusula real.
-    """
-    if _first_keyword(sql_text) not in ("UPDATE", "DELETE"):
-        return False
-    clean = _SQL_LITERALS.sub(" ", _SQL_COMMENTS.sub(" ", sql_text))
-    return re.search(r"\bwhere\b", clean, re.IGNORECASE) is None
+# Las guardas de lectura y la conversión de celdas se comparten con el servidor
+# MCP, así que viven en el dominio y en la capa de servicios. Se reexportan con
+# el nombre de siempre: son parte de la superficie que ya usaban las pruebas.
+_first_keyword = first_keyword
 
 
 def _read_only_error() -> JSONResponse:
@@ -86,35 +79,6 @@ def _confirm_error(sql_text: str) -> JSONResponse:
     ))
 
 
-def _snapshot(request: Request, profile_id: str, dbname: str, force: bool = False):
-    """Devuelve el snapshot cacheado o introspecta bajo demanda.
-
-    Retorna (snapshot, None) o (None, JSONResponse de error).
-    """
-    store = request.app.state.profiles
-    cache = request.app.state.snapshots
-    profile = store.get(profile_id)
-    if profile is None:
-        return None, _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
-    if not force:
-        cached = cache.get(profile_id, dbname)
-        if cached is not None:
-            return cached, None
-    try:
-        if profile.engine == Engine.sqlserver:
-            with manager.open_profile_connection(store, profile, dbname) as conn:
-                snapshot = mssql_introspector.introspect(conn, dbname)
-        else:
-            conninfo = store.conninfo(profile, dbname)
-            snapshot = introspector.introspect(conninfo, dbname)
-    except PasswordUnavailable:
-        return None, password_missing_error(profile_id)
-    except DB_EXCEPTIONS as exc:
-        return None, _error(400, classify_db_error(profile.engine, exc))
-    cache.set(profile_id, dbname, snapshot)
-    return snapshot, None
-
-
 def _summary(snapshot: Snapshot) -> dict:
     return {
         "ok": True,
@@ -127,19 +91,26 @@ def _summary(snapshot: Snapshot) -> dict:
     }
 
 
+def _detail_payload(detail: catalog.TableDetail) -> dict:
+    return {
+        "table": detail.table.model_dump(),
+        "referenced_by": [r.model_dump() for r in detail.referenced_by],
+        "routines": [r.model_dump() for r in detail.routines],
+        "views": detail.views,
+    }
+
+
 @router.post("/profiles/{profile_id}/db/{dbname}/introspect")
 def introspect_db(profile_id: str, dbname: str, request: Request):
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    return err if err else _summary(snapshot)
+    store, cache = _stores(request)
+    return _summary(catalog.get_snapshot(store, cache, profile_id, dbname))
 
 
 @router.post("/profiles/{profile_id}/db/{dbname}/refresh")
 def refresh_db(profile_id: str, dbname: str, request: Request):
-    old = request.app.state.snapshots.get(profile_id, dbname)
-    snapshot, err = _snapshot(request, profile_id, dbname, force=True)
-    if err:
-        return err
-    return {**_summary(snapshot), "diff": diff_snapshots(old, snapshot)}
+    store, cache = _stores(request)
+    snapshot, diff = catalog.refresh_snapshot(store, cache, profile_id, dbname)
+    return {**_summary(snapshot), "diff": diff}
 
 
 @router.get("/profiles/{profile_id}/db/{dbname}/objects")
@@ -153,113 +124,29 @@ def list_objects(
     limit: int = Query(default=200, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
-    items = list(snapshot.tables.values())
-    if schema:
-        # Acepta uno o varios schemas separados por comas
-        allowed = {sc.strip() for sc in schema.split(",") if sc.strip()}
-        items = [t for t in items if t.schema_name in allowed]
-    if kind:
-        items = [t for t in items if t.kind == kind]
-    if q:
-        needle = q.lower()
-        items = [
-            t for t in items
-            if needle in t.name.lower()
-            or any(needle in c.name.lower() for c in t.columns)
-        ]
-    total = len(items)
-    page = items[offset : offset + limit]
-    return {
-        "ok": True,
-        "total": total,
-        "items": [
-            ObjectSummary(
-                schema_name=t.schema_name,
-                name=t.name,
-                kind=t.kind,
-                comment=t.comment,
-                estimated_rows=t.estimated_rows,
-            ).model_dump()
-            for t in page
-        ],
-    }
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
+    total, page = catalog.list_objects(
+        snapshot, schema=schema, kind=kind, q=q, limit=limit, offset=offset
+    )
+    return {"ok": True, "total": total, "items": [o.model_dump() for o in page]}
 
 
 @router.get("/profiles/{profile_id}/db/{dbname}/tables/{schema}/{table}")
 def table_detail(profile_id: str, dbname: str, schema: str, table: str, request: Request):
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
-    key = f"{schema}.{table}"
-    found = snapshot.tables.get(key)
-    if found is None:
-        return _error(404, ApiError(
-            code="NOT_FOUND",
-            message=f"No existe {schema}.{table} en el snapshot.",
-            hint="Si la tabla es nueva, ejecuta refresh para re-introspectar.",
-        ))
-    referenced_by = [
-        r.model_dump()
-        for r in snapshot.relationships
-        if r.target == key and r.source != key
-    ]
-    routines = [r.model_dump() for r in routines_using(snapshot, key)]
-    return {
-        "ok": True,
-        "table": found.model_dump(),
-        "referenced_by": referenced_by,
-        "routines": routines,
-        "views": snapshot.view_usage.get(key, []),
-    }
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
+    return {"ok": True, **_detail_payload(catalog.table_detail(snapshot, schema, table))}
 
 
 @router.post("/profiles/{profile_id}/db/{dbname}/tables/{schema}/{table}/refresh")
 def refresh_table(profile_id: str, dbname: str, schema: str, table: str, request: Request):
-    """Refresh granular de una tabla (menú «Actualizar» del árbol).
-
-    PostgreSQL: re-introspecta solo esa tabla y actualiza el snapshot en caché.
-    SQL Server: de momento re-introspecta la base completa (mismo resultado,
-    más lento) — el snapshot queda igual de fresco.
-    """
-    store = request.app.state.profiles
-    profile = store.get(profile_id)
-    if profile is None:
-        return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
-    key = f"{schema}.{table}"
-    try:
-        if profile.engine == Engine.sqlserver:
-            snapshot, err = _snapshot(request, profile_id, dbname, force=True)
-            if err:
-                return err
-            found = snapshot.tables.get(key)
-        else:
-            conninfo = store.conninfo(profile, dbname)
-            found = introspector.refresh_table(conninfo, snapshot, schema, table)
-    except PasswordUnavailable:
-        return password_missing_error(profile_id)
-    except DB_EXCEPTIONS as exc:
-        return _error(400, classify_db_error(profile.engine, exc))
-    if found is None:
+    """Refresh granular de una tabla (menú «Actualizar» del árbol)."""
+    store, cache = _stores(request)
+    detail = catalog.refresh_table(store, cache, profile_id, dbname, schema, table)
+    if detail is None:
         return {"ok": True, "removed": True}
-    referenced_by = [
-        r.model_dump()
-        for r in snapshot.relationships
-        if r.target == key and r.source != key
-    ]
-    return {
-        "ok": True,
-        "removed": False,
-        "table": found.model_dump(),
-        "referenced_by": referenced_by,
-        "routines": [r.model_dump() for r in routines_using(snapshot, key)],
-        "views": snapshot.view_usage.get(key, []),
-    }
+    return {"ok": True, "removed": False, **_detail_payload(detail)}
 
 
 @router.get("/profiles/{profile_id}/db/{dbname}/tables/{schema}/{table}/related")
@@ -271,71 +158,18 @@ def related_tables(
     request: Request,
     direction: str = "both",
 ):
-    """Tablas relacionadas con la dada.
-
-    direction:
-      - "in"   → tablas que la referencian (dependientes, "debajo")
-      - "out"  → tablas a las que apunta con sus FKs (referenciadas, "arriba")
-      - "both" → ambas (por defecto)
-    """
-    if direction not in ("in", "out", "both"):
-        return _error(422, ApiError(
-            code="VALIDATION",
-            message=f"direction inválida: {direction}",
-            hint="Valores permitidos: in, out, both.",
-        ))
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
-    key = f"{schema}.{table}"
-    related: set[str] = set()
-    for r in snapshot.relationships:
-        if direction in ("out", "both") and r.source == key:
-            related.add(r.target)
-        if direction in ("in", "both") and r.target == key:
-            related.add(r.source)
-    related.discard(key)
-    return {"ok": True, "related": sorted(related)}
+    """Tablas relacionadas con la dada (in / out / both)."""
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
+    return {"ok": True, "related": catalog.related(snapshot, schema, table, direction)}
 
 
 @router.get("/profiles/{profile_id}/db/{dbname}/views/{schema}/{view}/depends-on")
 def view_depends_on(profile_id: str, dbname: str, schema: str, view: str, request: Request):
     """Tablas/vistas de las que depende una vista (pg_rewrite/pg_depend)."""
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
-    key = f"{schema}.{view}"
-    found = snapshot.tables.get(key)
-    if found is None:
-        return _error(404, ApiError(code="NOT_FOUND", message=f"No existe {key} en el snapshot."))
-    if found.kind not in (TableKind.view, TableKind.matview):
-        return _error(422, ApiError(
-            code="VALIDATION",
-            message=f"{key} no es una vista.",
-            hint="Este endpoint solo aplica a vistas y vistas materializadas.",
-        ))
-    # Resolución de nombres contra TODO el snapshot: claves completas siempre,
-    # nombres sueltos solo si no son ambiguos entre schemas.
-    known: dict[str, str] = {}
-    name_counts: dict[str, int] = {}
-    for t in snapshot.tables:
-        known[t] = t
-        bare = t.split(".", 1)[1]
-        name_counts[bare] = name_counts.get(bare, 0) + 1
-    for t in snapshot.tables:
-        bare = t.split(".", 1)[1]
-        if name_counts[bare] == 1:
-            known.setdefault(bare, t)
-
-    # Unión de dos fuentes: dependencias registradas (pg_depend) y relaciones
-    # que aparecen textualmente en el FROM/JOIN del SQL de la vista.
-    dep_tables = {t for t, views in snapshot.view_usage.items() if key in views}
-    definition = found.definition or ""
-    sql_rels = collect_relations(definition, known)
-    sql_rels.discard(key)
-    tables = sorted(dep_tables | sql_rels)
-
-    joins = parse_view_joins(definition, known)
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
+    tables, joins = catalog.view_dependencies(snapshot, schema, view)
     return {"ok": True, "tables": tables, "joins": joins}
 
 
@@ -367,9 +201,7 @@ def routine_definition(
 ):
     """Código fuente completo (CREATE ...) de una función o procedimiento."""
     store = request.app.state.profiles
-    profile = store.get(profile_id)
-    if profile is None:
-        return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
+    profile = catalog.get_profile(store, profile_id)
     try:
         with manager.open_profile_connection(store, profile, dbname) as conn:
             with conn.cursor() as cur:
@@ -391,31 +223,8 @@ def routine_definition(
         return _error(400, classify_db_error(profile.engine, exc))
 
 
-# Longitud máxima de una celda en las respuestas de datos. Las cuadrículas del
-# frontend recortan visualmente de todos modos, y sin este tope una tabla de
-# bitácora con payloads grandes puede generar cientos de MB de JSON por página
-# (y agotar la memoria del sidecar antes de responder).
-MAX_CELL_CHARS = 4000
-
-
-def _clip(text: str) -> str:
-    return text if len(text) <= MAX_CELL_CHARS else text[:MAX_CELL_CHARS] + "… (truncado)"
-
-
-def _jsonable(v):
-    """Convierte un valor de la BD a algo serializable, legible y acotado."""
-    if v is None or isinstance(v, (bool, int)):
-        return v
-    if isinstance(v, str):
-        return _clip(v)
-    if isinstance(v, float):
-        return str(v) if (math.isnan(v) or math.isinf(v)) else v
-    if isinstance(v, (bytes, memoryview)):
-        h = bytes(v).hex()
-        return f"\\x{h[:120]}{'…' if len(h) > 120 else ''}"
-    if isinstance(v, (dict, list)):
-        return _clip(json.dumps(v, ensure_ascii=False, default=str))
-    return _clip(str(v))
+_clip = clip
+_jsonable = jsonable
 
 
 @router.get("/profiles/{profile_id}/db/{dbname}/tables/{schema}/{table}/data")
@@ -438,9 +247,8 @@ def table_data(
     Solo se permite sobre objetos presentes en el snapshot (evita inyección:
     los identificadores se citan con psycopg.sql.Identifier).
     """
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
     key = f"{schema}.{table}"
     found = snapshot.tables.get(key)
     if found is None:
@@ -450,8 +258,7 @@ def table_data(
             hint="Si el objeto es nuevo, ejecuta refresh.",
         ))
 
-    store = request.app.state.profiles
-    profile = store.get(profile_id)
+    profile = catalog.get_profile(store, profile_id)
     colnames = {c.name for c in found.columns}
 
     # Filtros por columna (texto, insensible a mayúsculas);
@@ -626,9 +433,7 @@ def run_query(profile_id: str, dbname: str, body: QueryRequest, request: Request
     confirmación explícita.
     """
     store = request.app.state.profiles
-    profile = store.get(profile_id)
-    if profile is None:
-        return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
+    profile = catalog.get_profile(store, profile_id)
     statements = split_statements(body.sql)
     if not statements:
         return _error(422, ApiError(code="VALIDATION", message="Consulta vacía."))
@@ -715,9 +520,7 @@ def explain_query(profile_id: str, dbname: str, body: ExplainRequest, request: R
     ``EXPLAIN ANALYZE UPDATE …`` ejecuta el UPDATE de verdad.
     """
     store = request.app.state.profiles
-    profile = store.get(profile_id)
-    if profile is None:
-        return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
+    profile = catalog.get_profile(store, profile_id)
     # Un plan describe UNA sentencia: si el script trae varias se explica la
     # primera. El editor manda solo la selección cuando la hay.
     statements = split_statements(body.sql)
@@ -781,69 +584,8 @@ def explain_query(profile_id: str, dbname: str, body: ExplainRequest, request: R
         ))
 
 
-def _postgres_plan(conn, sql_text: str, mode: str, timeout: int) -> list[dict]:
-    options = "ANALYZE, BUFFERS, COSTS, TIMING, FORMAT TEXT" if mode == "actual" else "COSTS, FORMAT TEXT"
-    with conn.cursor() as cur:
-        cur.execute(f"SET statement_timeout = {int(timeout)}")
-        cur.execute(f"EXPLAIN ({options}) {sql_text}")
-        lines = [r[0] for r in cur.fetchall()]
-    return explain_plan.parse_postgres_plan(lines)
-
-
-# Con STATISTICS PROFILE el servidor devuelve TODAS las filas de la consulta
-# antes del plan. No se materializan (se leen y descartan por lotes), pero sí
-# hay que acotar cuánto se lee del servidor: por encima de este tope se aborta
-# y se sugiere el plan estimado.
-MSSQL_PLAN_DISCARD_CHUNK = 1000
-MSSQL_PLAN_MAX_DISCARDED_ROWS = 200_000
-# Tope de nodos del plan (los planes patológicos pueden tener miles).
-MSSQL_PLAN_MAX_NODES = 5_000
-
-
-class PlanTooLarge(Exception):
-    """El conjunto de resultados de la consulta es demasiado grande para el plan real."""
-
-
-def _mssql_plan(conn, sql_text: str, mode: str) -> list[dict]:
-    """Recoge el rowset del plan tras ejecutar la consulta con SET ... ON.
-
-    Con SHOWPLAN_ALL la sentencia se compila pero NO se ejecuta: el único
-    rowset es el plan. Con STATISTICS PROFILE la consulta sí se ejecuta y el
-    plan llega DESPUÉS de sus filas, así que hay que recorrer los rowsets.
-
-    Dos reglas que no se pueden relajar:
-    - Las filas de datos jamás se materializan enteras (`fetchall` sobre una
-      tabla grande revienta la memoria del sidecar); se leen por lotes y se
-      descartan, con un tope duro de filas.
-    - No se envía ninguna sentencia más por esta conexión mientras queden
-      resultados pendientes: hacerlo desincroniza el protocolo TDS y produce
-      un "Invalid TDS marker". La conexión es efímera y se cierra al salir,
-      así que no hace falta un `SET ... OFF` de limpieza.
-    """
-    setting = "STATISTICS PROFILE" if mode == "actual" else "SHOWPLAN_ALL"
-    columns: list[str] = []
-    rows: list[tuple] = []
-    with conn.cursor() as cur:
-        cur.execute(f"SET {setting} ON")
-        cur.execute(sql_text)
-        discarded = 0
-        while True:
-            names = [d[0] for d in cur.description or []]
-            if names and any(n.lower() == "stmttext" for n in names):
-                columns = names
-                rows = list(cur.fetchmany(MSSQL_PLAN_MAX_NODES))
-            elif names:
-                # Filas de la consulta: se leen por lotes y se tiran.
-                while True:
-                    chunk = cur.fetchmany(MSSQL_PLAN_DISCARD_CHUNK)
-                    if not chunk:
-                        break
-                    discarded += len(chunk)
-                    if discarded > MSSQL_PLAN_MAX_DISCARDED_ROWS:
-                        raise PlanTooLarge(discarded)
-            if not cur.nextset():
-                break
-    return explain_plan.parse_mssql_plan(columns, rows)
+_postgres_plan = postgres_plan
+_mssql_plan = mssql_plan
 
 
 class RelationshipsRequest(BaseModel):
@@ -852,44 +594,21 @@ class RelationshipsRequest(BaseModel):
 
 @router.post("/profiles/{profile_id}/db/{dbname}/relationships")
 def relationships(profile_id: str, dbname: str, body: RelationshipsRequest, request: Request):
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
-    wanted = set(body.tables)
-    edges = [
-        r.model_dump()
-        for r in snapshot.relationships
-        if r.source in wanted and r.target in wanted
-    ]
-    return {"ok": True, "relationships": edges}
-
-
-def _known_names(snapshot: Snapshot) -> dict[str, str]:
-    """Mapa de resolución de nombres: claves completas + nombres sueltos no
-    ambiguos -> "schema.tabla". Mismo criterio que la dependencia de vistas."""
-    known: dict[str, str] = {}
-    name_counts: dict[str, int] = {}
-    for t in snapshot.tables:
-        known[t] = t
-        bare = t.split(".", 1)[1]
-        name_counts[bare] = name_counts.get(bare, 0) + 1
-    for t in snapshot.tables:
-        bare = t.split(".", 1)[1]
-        if name_counts[bare] == 1:
-            known.setdefault(bare, t)
-    return known
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
+    edges = catalog.relationships_between(snapshot, body.tables)
+    return {"ok": True, "relationships": [r.model_dump() for r in edges]}
 
 
 @router.post("/profiles/{profile_id}/db/{dbname}/query/build")
 def build_query(profile_id: str, dbname: str, body: QuerySpec, request: Request):
-    """Traduce el diagrama del constructor (tablas + joins) a SQL PostgreSQL.
+    """Traduce el diagrama del constructor (tablas + joins) a SQL.
 
     Valida que cada tabla y columna exista en el snapshot: así el SQL generado
     solo referencia objetos reales (coherente con la ejecución de solo lectura).
     """
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
     if not body.tables:
         return _error(422, ApiError(
             code="VALIDATION",
@@ -897,8 +616,7 @@ def build_query(profile_id: str, dbname: str, body: QuerySpec, request: Request)
             hint="Arrastra tablas al lienzo antes de pulsar «Listo».",
         ))
     for key in body.tables:
-        found = snapshot.tables.get(key)
-        if found is None:
+        if snapshot.tables.get(key) is None:
             return _error(422, ApiError(
                 code="VALIDATION",
                 message=f"La tabla {key} no existe en el snapshot.",
@@ -936,7 +654,7 @@ def build_query(profile_id: str, dbname: str, body: QuerySpec, request: Request)
         select_sql=body.select_sql,
         tail_sql=body.tail_sql,
     )
-    profile = request.app.state.profiles.get(profile_id)
+    profile = store.get(profile_id)
     dialect = (
         "sqlserver"
         if getattr(profile, "engine", None) == Engine.sqlserver
@@ -956,17 +674,15 @@ class ParseQueryRequest(BaseModel):
 @router.post("/profiles/{profile_id}/db/{dbname}/query/parse")
 def parse_query(profile_id: str, dbname: str, body: ParseQueryRequest, request: Request):
     """Analiza una sentencia SQL y devuelve el diagrama equivalente."""
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
     if not body.sql.strip():
         return _error(422, ApiError(
             code="VALIDATION",
             message="No hay SQL que analizar.",
             hint="Escribe una consulta en el editor antes de pulsar «Diagrama».",
         ))
-    known = _known_names(snapshot)
-    model = query_builder.parse_query_sql(body.sql, known)
+    model = query_builder.parse_query_sql(body.sql, catalog.known_names(snapshot))
     if not model.tables:
         return _error(422, ApiError(
             code="SQL_ERROR",
@@ -1002,15 +718,7 @@ class ExportRequest(BaseModel):
 @router.post("/profiles/{profile_id}/db/{dbname}/export")
 def export_model(profile_id: str, dbname: str, body: ExportRequest, request: Request):
     """Exporta las tablas indicadas a un formato editable de texto."""
-    snapshot, err = _snapshot(request, profile_id, dbname)
-    if err:
-        return err
-    if body.format == "mermaid":
-        return {"ok": True, "content": to_mermaid(snapshot, body.tables), "extension": "mmd"}
-    if body.format == "dbml":
-        return {"ok": True, "content": to_dbml(snapshot, body.tables), "extension": "dbml"}
-    return _error(422, ApiError(
-        code="VALIDATION",
-        message=f"Formato no soportado: {body.format}",
-        hint="Formatos disponibles: mermaid, dbml.",
-    ))
+    store, cache = _stores(request)
+    snapshot = catalog.get_snapshot(store, cache, profile_id, dbname)
+    content, extension = catalog.export_model(snapshot, body.tables, body.format)
+    return {"ok": True, "content": content, "extension": extension}
