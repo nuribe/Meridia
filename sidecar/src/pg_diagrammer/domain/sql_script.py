@@ -1,4 +1,4 @@
-"""Separación de un script SQL en sentencias individuales.
+"""Análisis léxico de un script SQL: separación en sentencias y guardas de lectura.
 
 Partir por ``;`` a lo bruto se rompe en cuanto aparece un literal, un cuerpo
 ``$$…$$`` o un comentario con punto y coma dentro. Este lexer recorre el texto
@@ -96,3 +96,49 @@ def split_statements(script: str) -> list[str]:
 
     flush()
     return out
+
+
+# ---------------------------------------------------------------------------
+# Guardas de solo lectura
+# ---------------------------------------------------------------------------
+#
+# Viven aquí, y no en las rutas, porque las usan TRES consumidores: el editor de
+# consultas de la app (vía api/routes/db.py), el servidor MCP (vía
+# services/query.py) y sus pruebas. Una copia por consumidor es exactamente la
+# forma de que un día una de ellas deje pasar un DELETE.
+
+_SQL_COMMENTS = re.compile(r"(--[^\n]*)|(/\*.*?\*/)", re.S)
+_SQL_LITERALS = re.compile(r"'(?:[^']|'')*'", re.S)
+
+# Sentencias que no modifican datos ni estructura. Es la frontera entre lo que
+# puede ejecutar un perfil normal y lo que exige `allow_writes`.
+READ_KEYWORDS = ("SELECT", "WITH", "SHOW", "EXPLAIN", "TABLE", "VALUES", "DESCRIBE")
+
+# Subconjunto estricto para el acceso MCP: un agente consulta datos, no
+# inspecciona la sesión ni pide planes por la puerta de atrás (para eso hay una
+# tool propia). Ver docs/mcp.md §2.1.
+MCP_KEYWORDS = ("SELECT", "WITH")
+
+
+def first_keyword(sql_text: str) -> str:
+    """Primera palabra clave de la sentencia, ignorando comentarios."""
+    stripped = _SQL_COMMENTS.sub(" ", sql_text).lstrip().lstrip("(").lstrip()
+    parts = stripped.split(None, 1)
+    return parts[0].upper() if parts else ""
+
+
+def is_read_statement(sql_text: str, keywords: tuple[str, ...] = READ_KEYWORDS) -> bool:
+    """¿La sentencia es de solo lectura según el vocabulario dado?"""
+    return first_keyword(sql_text) in keywords
+
+
+def missing_where(sql_text: str) -> bool:
+    """UPDATE o DELETE sin WHERE, que es el error destructivo más habitual.
+
+    Se ignoran comentarios y literales para que un `WHERE` dentro de una
+    cadena no cuente como cláusula real.
+    """
+    if first_keyword(sql_text) not in ("UPDATE", "DELETE"):
+        return False
+    clean = _SQL_LITERALS.sub(" ", _SQL_COMMENTS.sub(" ", sql_text))
+    return re.search(r"\bwhere\b", clean, re.IGNORECASE) is None

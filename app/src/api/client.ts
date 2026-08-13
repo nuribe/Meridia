@@ -601,3 +601,64 @@ export const diagramsApi = {
       { method: "POST", body: JSON.stringify({ tables, format }) }
     ),
 };
+
+// --- Acceso MCP: bitácora y control ---
+
+/** Una llamada de un cliente MCP, tal como quedó en la bitácora. */
+export interface McpEvent {
+  /** Índice de línea que asigna el LECTOR; sirve de clave y de orden. */
+  seq: number;
+  ts: string;
+  /** Nombre que el cliente declaró al conectarse ("vscode-copilot", "claude-code"…). */
+  client: string;
+  pid: number;
+  tool: string;
+  profile_id: string | null;
+  profile_name: string | null;
+  dbname: string | null;
+  /** Objeto sobre el que actuó, ya legible: "public.empleado", "schema=ventas"… */
+  target: string | null;
+  args: Record<string, unknown>;
+  /** "ok" | "error" | "denied" */
+  status: string;
+  elapsed_ms: number;
+  row_count: number | null;
+  /** Muestra acotada de un run_select; null en todo lo demás. */
+  sample_columns: string[] | null;
+  sample: unknown[][] | null;
+  error: ApiError | null;
+}
+
+export interface McpActivityPage {
+  events: McpEvent[];
+  /** Cursor para el siguiente sondeo. */
+  next_cursor: number;
+  total: number;
+  /** El cursor enviado ya no valía (rotación o limpieza): repintar desde cero. */
+  reset: boolean;
+}
+
+export interface McpSettings {
+  enabled: boolean;
+  /** Vacío = todos los perfiles. */
+  allowed_profiles: string[];
+  /** Ejecutar SELECT y medir el plan real. Independiente de `enabled`. */
+  allow_query: boolean;
+  /** Filas que run_select deja en la bitácora. 0 = ninguna. */
+  sample_rows: number;
+}
+
+export const mcpApi = {
+  activity: (since = 0, limit = 200) =>
+    apiFetch<McpActivityPage>(`/api/v1/mcp/activity?since=${since}&limit=${limit}`),
+
+  clearActivity: () => apiFetch<{ ok: boolean }>("/api/v1/mcp/activity", { method: "DELETE" }),
+
+  settings: () => apiFetch<{ settings: McpSettings }>("/api/v1/mcp/settings"),
+
+  setSettings: (data: Partial<McpSettings>) =>
+    apiFetch<{ settings: McpSettings }>("/api/v1/mcp/settings", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+};

@@ -2,9 +2,10 @@
 # (Archivo en ASCII puro: PowerShell 5.1 lo lee como ANSI y los caracteres
 #  no-ASCII de UTF-8 sin BOM rompen el parseo de cadenas.)
 #
-# Produce dos artefactos (los usuarios no necesitan Python, Node ni Rust):
+# Produce tres artefactos (los usuarios no necesitan Python, Node ni Rust):
 #   1. Instalador NSIS:  app\src-tauri\target\release\bundle\nsis\Meridia_*_x64-setup.exe
 #   2. ZIP portable:     dist-standalone\Meridia-portable-win64.zip (descomprimir y ejecutar)
+#   3. Extension MCP:    dist-standalone\meridia.mcpb (doble clic: conecta Claude Desktop)
 #
 # Requisitos SOLO en la maquina que compila: Python 3.11+, Node 20+, Rust.
 # Uso:  powershell -ExecutionPolicy Bypass -File scripts\build-standalone.ps1
@@ -71,6 +72,20 @@ if (-not (Test-Path $venvPy)) {
     scripts\pyinstaller_entry.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller fallo" }
 
+# Prueba de humo del modo MCP: el mismo exe con --mcp debe hablar el protocolo
+# y declarar sus herramientas (ver scripts\smoke_mcp.py).
+& $venvPy "scripts\smoke_mcp.py" "dist\pg-diagrammer-sidecar.exe"
+if ($LASTEXITCODE -ne 0) { throw "El modo MCP del ejecutable no responde" }
+
+# Extension instalable para Claude Desktop (.mcpb): un ZIP con el manifiesto y
+# este mismo exe dentro. Es la via de registro que funciona en la version de
+# Microsoft Store, donde claude_desktop_config.json se ignora en silencio.
+# Se genera aqui, con el exe recien validado, para que nunca se empaquete uno
+# viejo. La version del bundle debe ser semver puro: $appVersion lleva sufijo
+# (+build.N o +local) y el manifiesto lo rechaza.
+& $venvPy "scripts\build_mcpb.py" --version $baseVersion
+if ($LASTEXITCODE -ne 0) { throw "No se pudo generar la extension .mcpb" }
+
 # Prueba de humo: el exe arranca y responde el handshake JSON en stdout.
 $env:PG_DIAGRAMMER_TOKEN = "build-smoke"
 $proc = Start-Process -FilePath "dist\pg-diagrammer-sidecar.exe" -PassThru `
@@ -118,6 +133,12 @@ Set-Location $root
 & $venvPy "scripts\release_notes.py" --version $appVersion
 if ($LASTEXITCODE -ne 0) { throw "No se pudo generar NOVEDADES.md" }
 Copy-Item "$out\NOVEDADES.md" "$portable\NOVEDADES.md" -Force
+Copy-Item "$root\docs\mcp.md" "$portable\ACCESO-MCP.md" -Force
+
+# La extension viaja suelta en dist-standalone (para instalarla con doble clic
+# sin descomprimir nada) y tambien dentro del ZIP portable.
+Copy-Item "$root\sidecar\dist\meridia.mcpb" "$out\meridia.mcpb" -Force
+Copy-Item "$root\sidecar\dist\meridia.mcpb" "$portable\meridia.mcpb" -Force
 
 # Diagramas incluidos en el portable (biblioteca inicial).
 $diagSrc = $DiagramsDir
@@ -141,6 +162,7 @@ Write-Host "Listo: $appVersion" -ForegroundColor Green
 Get-ChildItem "$release\bundle\nsis\*-setup.exe" -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Host "  Instalador: $($_.FullName)" }
 Write-Host "  Portable:   $out\Meridia-portable-win64.zip"
+Write-Host "  Extension:  $out\meridia.mcpb  (doble clic para conectar Claude Desktop)"
 Write-Host "  Novedades:  $out\NOVEDADES.md"
 Write-Host ""
 Write-Host "Nota: la version portable requiere WebView2 (preinstalado en Windows 10/11;"

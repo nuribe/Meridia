@@ -8,11 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from pg_diagrammer import __version__
-from pg_diagrammer.api.routes import connections, db, diagrams, profiles
+from pg_diagrammer.activity.log import ActivityLog
+from pg_diagrammer.activity.settings import McpSettingsStore
+from pg_diagrammer.api.routes import connections, db, diagrams, mcp, profiles
 from pg_diagrammer.connections.profiles import ProfileStore
 from pg_diagrammer.errors import ApiError, classify_pg_error
 from pg_diagrammer.introspection.cache import SnapshotCache
 from pg_diagrammer.projects.store import DiagramStore
+from pg_diagrammer.services.errors import ServiceError
 
 # Orígenes permitidos: webview de Tauri (prod) y Vite (dev / modo navegador).
 ALLOWED_ORIGINS = [
@@ -30,6 +33,10 @@ def create_app(session_token: str, data_dir: Path | None = None) -> FastAPI:
     app.state.profiles = ProfileStore(data_dir=data_dir)
     app.state.snapshots = SnapshotCache()
     app.state.diagrams = DiagramStore(app.state.profiles.data_dir)
+    # Bitácora y ajustes del acceso MCP: viven en el mismo directorio de datos
+    # porque los comparten con procesos que no son este (ver activity/).
+    app.state.mcp_activity = ActivityLog(app.state.profiles.data_dir)
+    app.state.mcp_settings = McpSettingsStore(app.state.profiles.data_dir)
 
     app.add_middleware(
         CORSMiddleware,
@@ -54,6 +61,18 @@ def create_app(session_token: str, data_dir: Path | None = None) -> FastAPI:
                 )
         return await call_next(request)
 
+    @app.exception_handler(ServiceError)
+    async def service_error(request: Request, exc: ServiceError):
+        """Traduce un fallo de la capa de servicios al envelope de la API.
+
+        Es el equivalente HTTP de lo que hará el adaptador MCP con las mismas
+        excepciones: mismo `code`, mismo `hint`, distinto transporte.
+        """
+        return JSONResponse(
+            status_code=exc.status,
+            content={"ok": False, **exc.to_api_error().model_dump()},
+        )
+
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception):
         return JSONResponse(status_code=500, content=classify_pg_error(exc).model_dump())
@@ -66,4 +85,5 @@ def create_app(session_token: str, data_dir: Path | None = None) -> FastAPI:
     app.include_router(profiles.router, prefix="/api/v1")
     app.include_router(db.router, prefix="/api/v1")
     app.include_router(diagrams.router, prefix="/api/v1")
+    app.include_router(mcp.router, prefix="/api/v1")
     return app

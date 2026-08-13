@@ -10,13 +10,32 @@ dependencies = [
     "python-tds>=1.15",
     "pydantic>=2.7",
     "keyring>=25",
+    # SDK oficial de Model Context Protocol. El servidor MCP (docs/mcp.md) es
+    # un segundo adaptador sobre services/, con su propio entry point stdio;
+    # no arranca con el sidecar ni añade un proceso residente.
+    #
+    # Acotado a la serie 2.x: el 2.0 renombró FastMCP a MCPServer y pasó los
+    # campos del protocolo a snake_case (`read_only_hint`, `client_info`), así
+    # que mcp/server.py no compila contra 1.x.
+    "mcp>=2.0,<3",
 ]
+
+[project.scripts]
+# Lo invoca el cliente MCP (VS Code, Claude Desktop), no una persona. En el
+# ejecutable empaquetado el equivalente es `pg-diagrammer-sidecar --mcp`: un
+# solo binario con dos modos, ver pg_diagrammer/cli.py.
+meridia-mcp = "pg_diagrammer.mcp.server:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "httpx>=0.27",
     "pyinstaller>=6.10",
+    # Valida manifest.json de la extensión .mcpb contra el JSON Schema oficial
+    # (tests/test_mcpb.py). Sin él esa prueba se salta, y un manifiesto
+    # inválido no da error: Claude Desktop instala la extensión y no arranca
+    # nada.
+    "jsonschema>=4",
 ]
 
 [build-system]

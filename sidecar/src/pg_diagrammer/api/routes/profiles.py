@@ -4,10 +4,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from pg_diagrammer.connections import manager, mssql
-from pg_diagrammer.connections.profiles import PasswordUnavailable
-from pg_diagrammer.domain.models import Engine, ProfileCreate
-from pg_diagrammer.errors import ApiError, DB_EXCEPTIONS, classify_db_error
+from pg_diagrammer.domain.models import ProfileCreate
+from pg_diagrammer.errors import ApiError
+from pg_diagrammer.services import catalog
 
 router = APIRouter(tags=["profiles"])
 
@@ -79,23 +78,4 @@ def set_session_password(profile_id: str, body: dict, request: Request):
 @router.get("/profiles/{profile_id}/databases")
 def list_databases(profile_id: str, request: Request):
     store = request.app.state.profiles
-    profile = store.get(profile_id)
-    if profile is None:
-        return _error(404, ApiError(code="NOT_FOUND", message="Perfil inexistente."))
-    # Conectamos a la base del perfil (con pgbouncer, una que exista en su pool).
-    # Desde cualquier conexión se pueden consultar pg_database / sys.databases
-    # y obtener TODAS las bases del servidor.
-    default_db = "master" if profile.engine == Engine.sqlserver else "postgres"
-    conn_db = getattr(profile, "dbname", None) or default_db
-    try:
-        if profile.engine == Engine.sqlserver:
-            with manager.open_profile_connection(store, profile, conn_db) as conn:
-                databases = mssql.list_databases_conn(conn)
-        else:
-            conninfo = store.conninfo(profile, conn_db)
-            databases = manager.list_databases_conninfo(conninfo)
-        return {"ok": True, "databases": databases}
-    except PasswordUnavailable:
-        return password_missing_error(profile_id)
-    except DB_EXCEPTIONS as exc:
-        return _error(400, classify_db_error(profile.engine, exc))
+    return {"ok": True, "databases": catalog.list_databases(store, profile_id)}
