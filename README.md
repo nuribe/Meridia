@@ -20,7 +20,67 @@ Si alguna vez te preguntaste *"¿cómo está organizada esta base de datos?"* o 
 - **Escribir consultas SQL** de solo lectura, con un editor que colorea la sintaxis y te autocompleta nombres de tablas y columnas (pulsa **TAB** para aceptar la sugerencia). Los resultados traen un **filtro por columna** para acotar lo que ves sin volver a lanzar la consulta.
 - **Entender por qué una consulta va lenta** con el [plan de ejecución dibujado como un diagrama](#-el-plan-de-ejecución-de-un-vistazo).
 - **Guardar y compartir**: exporta tus diagramas a **PNG**, **SVG**, **Mermaid** o **DBML**, o guárdalos como archivo `.pgdiag` que luego puedes abrir incluso sin conexión a la base de datos.
+- **Dejar que tu asistente de IA lea el catálogo** (GitHub Copilot, Claude): Meridia hace de servidor MCP, así que el agente puede consultar tu esquema y sus relaciones sin que le des credenciales. Es de **solo lectura**, arranca **apagado** y todo lo que pide queda a la vista en la pestaña *Actividad IA*, con un interruptor para cortarle el acceso al instante.
 - **A tu gusto**: 4 temas visuales, zoom de toda la interfaz y ventana redimensionable.
+
+---
+
+## 🤖 Conectar tu asistente de IA (MCP)
+
+Meridia puede actuar como servidor **MCP** (*Model Context Protocol*), el
+estándar que usan GitHub Copilot y Claude para consultar herramientas externas.
+Con esto le puedes preguntar a tu asistente *"¿qué tablas dependen de
+`empleado`?"* o *"dibújame el modelo de facturación"* y responde leyendo tu base
+de datos de verdad, no inventándose nombres.
+
+**Lo que hay que saber antes de encenderlo:**
+
+- **Es de solo lectura.** No existe ninguna herramienta que escriba, y el
+  permiso «Permitir escritura» de una conexión **no se hereda**: ese lo
+  concediste para ti, frente al editor de consultas, donde un `UPDATE` sin
+  `WHERE` te pide confirmación. A un agente no hay a quién preguntarle.
+- **Arranca apagado.** Hay dos interruptores en la pestaña *Actividad IA*:
+  «Permitir acceso MCP» (catálogo y plan estimado) y «Permitir consultas SQL»
+  (ejecutar `SELECT` y medir el plan real). Puedes dar el primero sin el segundo.
+- **Ves todo lo que hace.** Cada llamada aparece en la pestaña *Actividad IA*
+  con su hora, qué cliente la hizo, qué objeto tocó y cuánto tardó — incluidos
+  los intentos que se rechazaron. El interruptor corta el acceso en la siguiente
+  llamada, sin reiniciar nada.
+- **Tus credenciales no salen de tu llavero.** El servidor MCP usa los mismos
+  perfiles de conexión que ya configuraste; nunca escribes una contraseña en la
+  configuración de Copilot o Claude.
+
+**Con Claude Desktop, doble clic y ya.** Junto a Meridia se entrega
+`meridia.mcpb`: ábrelo, confirma la instalación y el conector queda disponible.
+No hay ninguna ruta que escribir.
+
+> En Windows es además la única vía fiable: si Claude Desktop se instaló desde
+> la Microsoft Store, el `claude_desktop_config.json` se ignora en silencio —sin
+> errores, sin registros, sin aparecer en Configuración → Developer—. La
+> extensión no depende de ese archivo. Ver [`docs/mcp.md` § 6.0](docs/mcp.md).
+
+**En los demás clientes** es una línea de configuración apuntando al ejecutable
+de Meridia con `--mcp`:
+
+```jsonc
+// Claude Code / Claude Desktop clásico (instalado desde claude.ai)
+{ "mcpServers": { "meridia": {
+    "command": "C:\\Program Files\\Meridia\\pg-diagrammer-sidecar.exe",
+    "args": ["--mcp"] } } }
+
+// VS Code / GitHub Copilot — .vscode/mcp.json
+{ "servers": { "meridia": { "type": "stdio",
+    "command": "C:\\Program Files\\Meridia\\pg-diagrammer-sidecar.exe",
+    "args": ["--mcp"] } } }
+```
+
+Es el **mismo ejecutable** que Meridia usa por dentro: sin argumentos es el
+motor de la app, y con `--mcp` habla el protocolo por su entrada estándar. No
+hay nada más que instalar, y no hace falta tener Meridia abierta.
+
+Los detalles —qué herramientas expone, los límites de cada una y cómo funciona
+la bitácora— están en [`docs/mcp.md`](docs/mcp.md), que también viaja dentro
+del ZIP portable como `ACCESO-MCP.md`.
 
 ---
 
@@ -50,10 +110,11 @@ No necesitas instalar PostgreSQL ni SQL Server: Meridia se conecta a **cualquier
 powershell -ExecutionPolicy Bypass -File scripts\build-standalone.ps1
 ```
 
-Produce dos artefactos en Windows:
+Produce tres artefactos en Windows:
 
 - **Instalador** (`Meridia_x.y.z_x64-setup.exe`): instala la app con acceso directo; descarga WebView2 solo si falta.
 - **ZIP portable** (`Meridia-portable-win64.zip`): descomprimir y ejecutar `Meridia.exe`, sin instalación. Requiere WebView2 (ya viene en Windows 10/11). El ZIP incluye una carpeta `diagrams` con tu biblioteca actual (o la que indiques con `-DiagramsDir`): la app la usa como biblioteca inicial, y los diagramas se abren contra la conexión del usuario (funcionan en otra máquina si su base tiene esas tablas).
+- **Extensión MCP** (`meridia.mcpb`): conecta Claude Desktop con tu catálogo (ver [arriba](#-conectar-tu-asistente-de-ia-mcp)). Se genera con el mismo ejecutable recién validado, va suelta y también dentro del ZIP.
 
 El motor Python viaja empaquetado dentro (PyInstaller) — el usuario final no necesita nada más.
 
@@ -173,6 +234,7 @@ Con **▤ Tabla** cambias a la vista de operadores con los números exactos, y c
 - **No recuerda mi contraseña al reiniciar.** Si tu sistema no tiene llavero disponible, la contraseña solo dura la sesión; te la volverá a pedir (nunca se guarda en texto plano).
 - **El plan real dice que la consulta devuelve demasiadas filas.** Es a propósito: para medir el plan real hay que ejecutar la consulta entera, y traerse millones de filas solo para tirarlas no compensa. Acota con `TOP`/`LIMIT` o `WHERE`, o quédate con el plan estimado.
 - **Veo caracteres `�` en algunos textos.** Esa columna tiene bytes que no existen en la codificación de su *collation* (típico de texto UTF-8 guardado en un `varchar` de SQL Server). Meridia sustituye solo el carácter afectado en vez de fallar la consulta entera; el resto de la fila es correcto.
+- **Mi asistente no ve a Meridia y la pestaña *Actividad IA* está vacía.** Vacía significa que ningún cliente ha llegado al servidor: el problema está en cómo quedó registrado, no en Meridia. Ejecuta `python sidecar/scripts/diagnostico_mcp.py`, que recorre la cadena entera —configuración, JSON válido, entrada, ejecutable, arranque real— y vuelca los registros del cliente. Si Meridia no aparece en ninguno, el cliente nunca lo intentó; con Claude Desktop instalado desde la Microsoft Store eso es esperable y la salida es instalar `meridia.mcpb`.
 
 ---
 
@@ -185,6 +247,8 @@ Meridia son tres piezas trabajando juntas:
 - **Interfaz (React + React Flow):** el explorador y el lienzo de diagramas que ves.
 
 El shell y el motor se comunican por `127.0.0.1` con un *handshake*: el shell genera un token aleatorio, el motor abre un puerto efímero y lo anuncia, y toda petición a la API exige ese token. Nada queda expuesto fuera de tu equipo.
+
+El servidor MCP no es una cuarta pieza: es un **segundo adaptador** sobre la misma capa de servicios que usa la API REST. Corre en un proceso aparte que lanza el cliente —puede haber varios a la vez, y funcionan con Meridia cerrada—, habla por entrada estándar y por eso no necesita puerto ni token. Se encuentran en dos archivos del directorio de datos: la bitácora que alimenta la pestaña *Actividad IA* y los ajustes, que el proceso MCP relee en cada llamada; de ahí que el interruptor corte el acceso al instante.
 
 Diseño completo en [`docs/pg-diagrammer-diseno.md`](docs/pg-diagrammer-diseno.md).
 
@@ -250,4 +314,5 @@ Meridia atravesó varias fases y hoy es funcional de punta a punta:
 - **Diagramas:** lienzo con arrastrar-y-soltar, relaciones automáticas con cardinalidad (incluidas las reflexivas), auto-layout, personalización de nodos, notas y buscador de nodos.
 - **Consultas:** editor SQL de solo lectura con resaltado y autocompletado (adaptado al dialecto de cada motor), filtros por columna en los resultados y plan de ejecución —estimado o real— dibujado como diagrama de proceso.
 - **Compartir:** guardar/abrir `.pgdiag` (autocontenido y visible sin conexión), export PNG / SVG / Mermaid / DBML, PNG del plan de ejecución, directorio de diagramas configurable.
+- **Asistentes de IA (MCP):** servidor de solo lectura con 8 herramientas —perfiles, bases, objetos, ficha de tabla, relaciones, ERD, plan de ejecución y `SELECT`—, dos permisos independientes que arrancan apagados, bitácora de cada llamada (incluidos los rechazos) en la pestaña *Actividad IA* con interruptor de corte en caliente, y extensión `.mcpb` instalable en Claude Desktop.
 - **Comodidad:** 4 temas, zoom de la interfaz y ventana redimensionable.
